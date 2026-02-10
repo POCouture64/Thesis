@@ -1,0 +1,16 @@
+"variable","VIF"
+"stop_wdl_exp_combined",6.53688569674215
+"wdl_symptom_count",6.39218746998749
+"phq2_score",1.61025333928155
+"n_ment_conditions",1.60212195144913
+"n_physical_conditions",1.44212165219546
+"med_quant",1.36337108074521
+"osss_3_score",1.19870410993217
+"n_sleep_conditions",1.18764907161978
+"alc_sleep",1.05891555818463
+"can_sleep",1.05619791963676
+"education",1.04904476593
+"employment",1.03791314550395
+"sex",1.02793406615192
+"op_sleep",1.02792738790029
+"melatonin_use",1.02504739771374

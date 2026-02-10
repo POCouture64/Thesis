@@ -1,0 +1,7 @@
+"Step","N","N_Excluded","Pct_Retained"
+"1. Initial sample",696,NA,100
+"2. Age ≥65 years",575,121,82.6
+"3. BZRA use confirmed",423,152,60.8
+"4. Outcome available",398,25,57.2
+"5. Canadian resident",397,1,57
+"FINAL SAMPLE",397,NA,57
