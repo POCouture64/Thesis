@@ -1,0 +1,40 @@
+═══════════════════════════════════════════════════════════════
+FIRTH PENALIZED LOGISTIC REGRESSION - SUMMARY (VSURF)
+═══════════════════════════════════════════════════════════════
+
+MODEL: Model 3 (VSURF Prediction)
+Predictors: DBAS_Medications, CISS_Emotion, BFI_Extraversion, BFI_Conscientiousness
+
+PURPOSE:
+  Address quasi-separation from influential cases
+
+METHOD:
+  Firth's penalized likelihood (reduces finite-sample bias)
+
+RESULTS:
+  Mean OR change: 0.5%
+  Max OR change:  0.7%
+  Significance changes: 0 predictor(s)
+  AUC (Firth):    0.733
+  AUC (Standard): 0.733
+
+ALL VSURF PREDICTORS:
+# A tibble: 4 × 5
+  term                  Standard_OR_formatted Firth_OR_CI       OR_diff_pct Sig_change
+  <chr>                 <chr>                 <chr>                   <dbl> <chr>     
+1 DBAS_Medications      0.67                  0.67 [0.59, 0.76]       0.734 Consistent
+2 BFI_Extraversion      1.40                  1.39 [1.10, 1.77]      -0.684 Consistent
+3 CISS_Emotion          0.81                  0.81 [0.60, 1.09]       0.442 Consistent
+4 BFI_Conscientiousness 0.94                  0.94 [0.70, 1.26]      -0.111 Consistent
+
+INTERPRETATION:
+MINIMAL DIFFERENCES
+
+Firth and standard logistic yield very similar estimates. The
+penalization has minimal impact, suggesting separation is not severe.
+
+RECOMMENDATION:
+Report standard logistic as primary analysis. Mention Firth as
+sensitivity check showing robustness.
+
+═══════════════════════════════════════════════════════════════

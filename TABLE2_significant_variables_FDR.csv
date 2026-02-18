@@ -1,0 +1,11 @@
+"Family","Variable","P_Value","P_FDR"
+"Behavioral","capability_1",1e-04,4e-04
+"Behavioral","capability",1e-04,4e-04
+"Sleep_Adverse","stop_wdl_exp_combined",1e-04,0.00095
+"Sleep_Adverse","wdl_symptom_count",1e-04,0.00095
+"Personality","DBAS_Medications",1e-04,0.0016
+"Behavioral","motivation_1",0.001,0.00266666666666667
+"Behavioral","motivation_2",0.011,0.022
+"Sleep_Adverse","side_effects_1",0.004,0.0253333333333333
+"Behavioral","desires_1",0.017,0.0272
+"Behavioral","desires_3",0.026,0.0346666666666667

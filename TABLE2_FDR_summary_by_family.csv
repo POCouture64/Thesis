@@ -1,0 +1,6 @@
+"Family","N_Variables","N_Sig_Uncorrected","N_Sig_FDR","Pct_Sig_FDR"
+"Behavioral",8,6,6,75
+"Clinical",8,1,0,0
+"Demographics",6,0,0,0
+"Personality",16,2,1,6.2
+"Sleep_Adverse",19,6,3,15.8

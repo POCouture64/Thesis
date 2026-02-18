@@ -1,0 +1,28 @@
+═══════════════════════════════════════════════════════════════
+VSURF DEMOGRAPHICS - SUMMARY REPORT
+═══════════════════════════════════════════════════════════════
+
+Total demographics tested: 6
+Variables selected (interpretation): 2
+Variables eliminated: 4
+
+SELECTED DEMOGRAPHICS:
+  • age
+  • sex
+
+ELIMINATED DEMOGRAPHICS:
+  • education
+  • income
+  • employment
+  • driving_freq
+
+RECOMMENDATION:
+  PARSIMONIOUS ADJUSTMENT
+
+VSURF selected 2 demographic(s). Use these for confounder adjustment.
+
+NEXT STEPS:
+  1. Use selected demographics in regression models
+  2. This improves EPV while controlling key confounders
+
+═══════════════════════════════════════════════════════════════
