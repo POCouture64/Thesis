@@ -63,6 +63,7 @@ cat("Number of variables:", ncol(SIMOA), "\n")
 ```
 
 
+
 ## Eligible Participants
 ```{r}
 #| label: Eligible Participants
@@ -181,6 +182,7 @@ cat("═════════════════════════
 cat("✓ Eligibility filtering complete\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 ```
+
 
 
 ## Missing CISS Analysis
@@ -492,6 +494,7 @@ cat("═════════════════════════
 cat("✓ CISS investigation complete\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 ```
+
 
 
 ## Personality Missingness
@@ -974,6 +977,7 @@ cat("═════════════════════════
 cat("MISSINGNESS DIAGNOSTICS COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 ```
+
 
 
 ## Variable Combining
@@ -1465,6 +1469,7 @@ cat("  • COM-B: merged as separate items (no composites)\n")
 cat("  • Dataset saved: SIMOA_combined.rds\n")
 cat("  • Ready for variable reduction (next chunk)\n\n")
 ```
+
 
 
 ## Variable Selection and Preperation
@@ -1963,6 +1968,7 @@ cat("  • Ready for diagnostics (Chunk 7)\n\n")
 
 cat("NEXT STEP: Proceed to diagnostics and validation (Chunk 7)\n\n")
 ```
+
 
 
 ## Diagnostics - MI
@@ -2722,6 +2728,7 @@ cat("═════════════════════════
 ```
 
 
+
 ## Multiple Imputation
 ```{r}
 #==============================================================================
@@ -3181,6 +3188,7 @@ cat("═════════════════════════
 cat("✓ MULTIPLE IMPUTATION COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 ```
+
 
 
 ## Post-MI Processing
@@ -3900,6 +3908,7 @@ cat("═════════════════════════
 ```
 
 
+
 ## Descriptive Stats
 ```{r}
 #==============================================================================
@@ -3909,7 +3918,7 @@ cat("═════════════════════════
 #   1. Table 1: Overall sample characteristics
 #   2. Table 2: Characteristics by discontinuation status
 #   3. Group comparisons with FDR correction by domain
-# FDR families: Demographics, Clinical, Sleep/Adverse Effects, Behavioral, Personality
+# FDR families: Demographics, Clinical, Sleep/Adverse Effects, Behavioural, Personality
 #==============================================================================
 
 library(tableone)
@@ -4020,8 +4029,8 @@ sleep_adverse <- c(
   "wdl_symptom_count"       # CONTINUOUS (count 0-4)
 )
 
-# Family 4: Behavioral (COM-B)
-behavioral <- c(
+# Family 4: Behavioural (COM-B)
+behavioural <- c(
   paste0("motivation_", 1:3),
   paste0("desires_", 1:3),
   "capability_1", "capability"
@@ -4043,13 +4052,13 @@ personality <- c(
 )
 
 # All variables for Table 1
-all_vars <- c(demographics, clinical, sleep_adverse, behavioral, personality)
+all_vars <- c(demographics, clinical, sleep_adverse, behavioural, personality)
 
 cat("Variable families defined:\n")
 cat("  Demographics:", length(demographics), "variables\n")
 cat("  Clinical/Health:", length(clinical), "variables\n")
 cat("  Sleep aids & Adverse effects:", length(sleep_adverse), "variables\n")
-cat("  Behavioral (COM-B):", length(behavioral), "variables\n")
+cat("  Behavioural (COM-B):", length(behavioural), "variables\n")
 cat("  Personality subscales:", length(personality), "variables\n")
 cat("  Total:", length(all_vars), "variables\n\n")
 
@@ -4226,8 +4235,8 @@ for(var in all_vars) {
     family <- "Clinical"
   } else if(var %in% sleep_adverse) {
     family <- "Sleep_Adverse"
-  } else if(var %in% behavioral) {
-    family <- "Behavioral"
+  } else if(var %in% behavioural) {
+    family <- "behavioural"
   } else if(var %in% personality) {
     family <- "Personality"
   } else {
@@ -4597,7 +4606,7 @@ cat("False discovery rate (FDR) correction was applied separately within each\n"
 cat("variable family: demographics (n =", length(demographics), "),\n")
 cat("clinical (n =", length(clinical), "), sleep/adverse effects (n =", 
     length(sleep_adverse), "),\n")
-cat("behavioral (n =", length(behavioral), "), and personality (n =", 
+cat("behavioural (n =", length(behavioural), "), and personality (n =", 
     length(personality), ").\n\n")
 
 # -----------------------------------------------------------------------------
@@ -4654,6 +4663,7 @@ cat("═════════════════════════
 cat("✓ CHUNK 10 COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 ```
+
 
 
 ## PERS VSURF
@@ -5444,12 +5454,12 @@ cat("✓ Ready for logistic regression modeling\n\n")
 ## BEHA VSURF
 ```{r}
 #==============================================================================
-# CHUNK 11C: VSURF VARIABLE SELECTION (BEHAVIORAL PREDICTORS)
+# CHUNK 11C: VSURF VARIABLE SELECTION (BEHAVIOURAL PREDICTORS)
 #==============================================================================
-# Purpose: Select important behavioral variables (COM-B framework)
-# Strategy: Apply VSURF to behavioral/motivation block
+# Purpose: Select important behavioural variables (COM-B framework)
+# Strategy: Apply VSURF to behavioural/motivation block
 # Rationale: Identify key COM-B factors predicting BZRA discontinuation
-# Output: Reduced set of behavioral predictors for logistic regression
+# Output: Reduced set of behavioural predictors for logistic regression
 #==============================================================================
 
 library(VSURF)
@@ -5460,7 +5470,7 @@ library(ggplot2)
 
 cat("\n")
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("CHUNK 11C: VSURF VARIABLE SELECTION (BEHAVIORAL/COM-B)\n")
+cat("CHUNK 11C: VSURF VARIABLE SELECTION (BEHAVIOURAL/COM-B)\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 # Load imputed data
@@ -5475,15 +5485,15 @@ cat("✓ Loaded imputed data with", mids_data$m, "imputations\n\n")
 outcome_var <- "scrn_stopped_bzra"
 
 # ==============================================================================
-# DEFINE BEHAVIORAL VARIABLES
+# DEFINE BEHAVIOURAL VARIABLES
 # ==============================================================================
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("DEFINING BEHAVIORAL VARIABLES (COM-B)\n")
+cat("DEFINING BEHAVIOURAL VARIABLES (COM-B)\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 # COM-B Framework variables
-behavioral_vars <- c(
+behavioural_vars <- c(
   # Motivation
   paste0("motivation_", 1:3),
   
@@ -5494,7 +5504,7 @@ behavioral_vars <- c(
   "capability_1", "capability"
 )
 
-cat("BEHAVIORAL VARIABLES (", length(behavioral_vars), "):\n\n", sep = "")
+cat("BEHAVIOURAL VARIABLES (", length(behavioural_vars), "):\n\n", sep = "")
 cat("  Motivation (3): motivation_1, motivation_2, motivation_3\n")
 cat("  Desires (3): desires_1, desires_2, desires_3\n")
 cat("  Capability (2): capability_1, capability\n\n")
@@ -5516,8 +5526,8 @@ cat("═════════════════════════
 data_complete <- complete(mids_data, 1)
 
 # Check variable availability
-available_vars <- behavioral_vars[behavioral_vars %in% names(data_complete)]
-missing_vars <- behavioral_vars[!behavioral_vars %in% names(data_complete)]
+available_vars <- behavioural_vars[behavioural_vars %in% names(data_complete)]
+missing_vars <- behavioural_vars[!behavioural_vars %in% names(data_complete)]
 
 if(length(missing_vars) > 0) {
   cat("⚠️  WARNING: Missing variables:\n")
@@ -5525,7 +5535,7 @@ if(length(missing_vars) > 0) {
   cat("\n")
 }
 
-cat("Available behavioral variables:", length(available_vars), "of", length(behavioral_vars), "\n\n")
+cat("Available behavioural variables:", length(available_vars), "of", length(behavioural_vars), "\n\n")
 
 # Prepare predictor matrix
 X <- data_complete %>%
@@ -5750,7 +5760,7 @@ if(nrow(importance_df) > 0) {
     coord_flip() +
     scale_fill_brewer(palette = "Set2") +
     labs(
-      title = "Variable Importance - Behavioral Predictors (COM-B)",
+      title = "Variable Importance - Behavioural Predictors (COM-B)",
       subtitle = paste("VSURF selected", length(selected_vars), "of", ncol(X), "variables"),
       x = NULL,
       y = "Variable Importance (Mean Decrease Gini)"
@@ -5762,8 +5772,8 @@ if(nrow(importance_df) > 0) {
       legend.position = "bottom"
     )
   
-  ggsave("VSURF_behavioral_importance.png", p, width = 10, height = 6, dpi = 300)
-  cat("✓ Saved: VSURF_behavioral_importance.png\n\n")
+  ggsave("VSURF_behavioural_importance.png", p, width = 10, height = 6, dpi = 300)
+  cat("✓ Saved: VSURF_behavioural_importance.png\n\n")
 }
 
 # ==============================================================================
@@ -5791,11 +5801,11 @@ vsurf_output <- list(
   )
 )
 
-saveRDS(vsurf_output, "VSURF_behavioral_results.rds")
-saveRDS(selected_vars, "VSURF_behavioral_selected.rds")
+saveRDS(vsurf_output, "VSURF_behavioural_results.rds")
+saveRDS(selected_vars, "VSURF_behavioural_selected.rds")
 
-cat("✓ Saved: VSURF_behavioral_results.rds\n")
-cat("✓ Saved: VSURF_behavioral_selected.rds\n\n")
+cat("✓ Saved: VSURF_behavioural_results.rds\n")
+cat("✓ Saved: VSURF_behavioural_selected.rds\n\n")
 
 # ==============================================================================
 # SUMMARY
@@ -5810,7 +5820,7 @@ cat("  Variables selected:", length(selected_vars), "\n")
 cat("  Sample size:", nrow(X), "\n")
 cat("  Events per variable:", round(outcome_table[2] / length(selected_vars), 1), "\n\n")
 
-cat("SELECTED BEHAVIORAL VARIABLES:\n")
+cat("SELECTED BEHAVIOURAL VARIABLES:\n")
 for(i in seq_along(selected_vars)) {
   cat("  ", i, ". ", selected_vars[i], "\n", sep = "")
 }
