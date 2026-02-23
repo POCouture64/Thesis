@@ -6753,6 +6753,8 @@ cat("═════════════════════════
 #                   reflects full sample and our actual analysis approach
 # Method: Perform CV on each imputation, then pool results
 # Updated: Now uses Model 3 (VSURF Prediction) as primary model
+# AUC CIs: Bootstrap method (boot.n = 2000), averaged across imputations
+#           to match final_regression_results_revised approach
 #==============================================================================
 
 library(tidyverse)
@@ -6809,24 +6811,35 @@ cat("═════════════════════════
 
 formula_obj <- as.formula(paste(outcome_var, "~", paste(model_vars, collapse = " + ")))
 
-apparent_aucs <- numeric(length(imputed_list))
+# Bootstrap CI settings (used for CV AUC only)
+boot.n <- 2000
 
-for(m in 1:length(imputed_list)) {
-  data_m  <- imputed_list[[m]]
-  model_m <- glm(formula_obj, data = data_m, family = binomial())
-  pred_m  <- predict(model_m, type = "response")
-  roc_m   <- roc(data_m[[outcome_var]], pred_m, quiet = TRUE)
-  apparent_aucs[m] <- as.numeric(auc(roc_m))
+# Pull apparent AUC directly from saved regression results (Model 3)
+# This guarantees exact match with regression chunk - no seed coordination needed
+perf_m3 <- final_results$performance %>% filter(Model == "Model 3")
+
+apparent_auc_mean  <- perf_m3$AUC
+apparent_auc_lower <- perf_m3$AUC_Lower
+apparent_auc_upper <- perf_m3$AUC_Upper
+
+# Refit per imputation for range/SD diagnostics only (no CI resampling)
+apparent_aucs <- numeric(length(imputed_list))
+for(imp in 1:length(imputed_list)) {
+  data_imp  <- imputed_list[[imp]]
+  model_imp <- glm(formula_obj, data = data_imp, family = binomial())
+  pred_imp  <- predict(model_imp, type = "response")
+  roc_imp   <- roc(data_imp[[outcome_var]], pred_imp, quiet = TRUE)
+  apparent_aucs[imp] <- as.numeric(auc(roc_imp))
 }
 
-apparent_auc_mean <- mean(apparent_aucs)
-apparent_auc_sd   <- sd(apparent_aucs)
-
-cat("Apparent performance (fitted on full data):\n")
+cat("Apparent performance (from final_regression_results_revised.rds - Model 3):\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat(sprintf("Mean AUC: %.3f\n", apparent_auc_mean))
-cat(sprintf("SD AUC:   %.3f\n", apparent_auc_sd))
-cat(sprintf("Range:    %.3f to %.3f\n\n", min(apparent_aucs), max(apparent_aucs)))
+cat(sprintf("Mean AUC: %.3f [%.3f, %.3f]\n",
+            apparent_auc_mean, apparent_auc_lower, apparent_auc_upper))
+cat("Note: CIs are identical to regression chunk (same saved object, no resampling)\n")
+cat(sprintf("Range across imputations: %.4f to %.4f\n", min(apparent_aucs), max(apparent_aucs)))
+cat(sprintf("SD across imputations:    %.4f\n", sd(apparent_aucs)))
+cat("AUC per imputation: "); cat(sprintf("%.4f", apparent_aucs), sep = "  "); cat("\n\n")
 
 #==============================================================================
 # PART C: 10-FOLD CROSS-VALIDATION ON EACH IMPUTATION
@@ -6839,9 +6852,10 @@ cat("═════════════════════════
 cat("Settings:\n")
 cat("  Method: 10-fold CV\n")
 cat("  Repetitions: Performed on each imputation separately\n")
-cat("  Pooling: Average across imputations\n\n")
+cat("  Pooling: Average across imputations\n")
+cat(sprintf("  Bootstrap CI: boot.n = %d (consistent with regression chunk)\n\n", boot.n))
 
-cv_one_imputation <- function(data, formula_obj, outcome_var, n_folds = 10, seed = 123) {
+cv_one_imputation <- function(data, formula_obj, outcome_var, n_folds = 10, seed = 123, boot.n = 2000) {
 
   set.seed(seed)
   n        <- nrow(data)
@@ -6861,15 +6875,22 @@ cv_one_imputation <- function(data, formula_obj, outcome_var, n_folds = 10, seed
     all_preds[fold_ids == k] <- pred_k
     all_obs[fold_ids == k]   <- test_data[[outcome_var]]
 
-    roc_k       <- roc(test_data[[outcome_var]], pred_k, quiet = TRUE)
+    roc_k        <- roc(test_data[[outcome_var]], pred_k, quiet = TRUE)
     fold_aucs[k] <- as.numeric(auc(roc_k))
   }
 
+  # Overall CV AUC from concatenated out-of-fold predictions
   roc_overall <- roc(all_obs, all_preds, quiet = TRUE)
   overall_auc <- as.numeric(auc(roc_overall))
 
+  # Bootstrap CI on overall CV AUC - seed offset to be distinct from apparent CI seed
+  set.seed(seed + 1000)
+  ci_overall <- ci.auc(roc_overall, method = "bootstrap", boot.n = boot.n)
+
   list(
     overall_auc   = overall_auc,
+    cv_lower      = ci_overall[1],
+    cv_upper      = ci_overall[3],
     fold_aucs     = fold_aucs,
     mean_fold_auc = mean(fold_aucs),
     sd_fold_auc   = sd(fold_aucs)
@@ -6887,7 +6908,8 @@ for(m in 1:length(imputed_list)) {
     formula_obj = formula_obj,
     outcome_var = outcome_var,
     n_folds     = 10,
-    seed        = 123
+    seed        = 123 + m,
+    boot.n      = boot.n
   )
 }
 
@@ -6901,23 +6923,29 @@ cat("═════════════════════════
 cat("PART D: POOLED CV RESULTS\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cv_aucs      <- sapply(cv_results_list, function(x) x$overall_auc)
+# Pool point estimates and CIs by averaging across imputations
+# (consistent with calc_auc() pooling approach in regression chunk)
+cv_aucs   <- sapply(cv_results_list, function(x) x$overall_auc)
+cv_lowers <- sapply(cv_results_list, function(x) x$cv_lower)
+cv_uppers <- sapply(cv_results_list, function(x) x$cv_upper)
+
 cv_auc_mean  <- mean(cv_aucs)
-cv_auc_sd    <- sd(cv_aucs)
+cv_auc_lower <- mean(cv_lowers)
+cv_auc_upper <- mean(cv_uppers)
 
 cat("Cross-validated performance:\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat(sprintf("Mean CV AUC: %.3f\n", cv_auc_mean))
-cat(sprintf("SD:          %.3f\n", cv_auc_sd))
-cat(sprintf("Range:       %.3f to %.3f\n\n", min(cv_aucs), max(cv_aucs)))
+cat(sprintf("Mean CV AUC: %.3f [%.3f, %.3f]\n",
+            cv_auc_mean, cv_auc_lower, cv_auc_upper))
+cat(sprintf("Range across imputations: %.4f to %.4f\n", min(cv_aucs), max(cv_aucs)))
+cat(sprintf("SD across imputations:    %.4f\n", sd(cv_aucs)))
+cat("AUC per imputation: "); cat(sprintf("%.4f", cv_aucs), sep = "  "); cat("\n\n")
 
 optimism_mean <- apparent_auc_mean - cv_auc_mean
-optimism_sd   <- sqrt(apparent_auc_sd^2 + cv_auc_sd^2)
 
 cat("Optimism (Apparent - CV):\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat(sprintf("Mean optimism: %.3f\n", optimism_mean))
-cat(sprintf("SD:            %.3f\n\n", optimism_sd))
+cat(sprintf("Mean optimism: %.3f\n\n", optimism_mean))
 
 #==============================================================================
 # PART E: FOLD-LEVEL ANALYSIS
@@ -6934,7 +6962,7 @@ fold_summary <- tibble(
 )
 
 for(k in 1:10) {
-  fold_aucs_k            <- sapply(cv_results_list, function(x) x$fold_aucs[k])
+  fold_aucs_k              <- sapply(cv_results_list, function(x) x$fold_aucs[k])
   fold_summary$Mean_AUC[k] <- mean(fold_aucs_k)
   fold_summary$SD_AUC[k]   <- sd(fold_aucs_k)
 }
@@ -6984,25 +7012,29 @@ cat("PART G: SAVING RESULTS\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 performance_summary <- data.frame(
-  Metric = c("Apparent AUC (Mean)", "CV AUC (Mean)", "Optimism",
-             "Apparent SD", "CV SD"),
-  Value  = c(apparent_auc_mean, cv_auc_mean, optimism_mean,
-             apparent_auc_sd, cv_auc_sd),
-  Interpretation = c(
-    sprintf("[%.3f, %.3f]", min(apparent_aucs), max(apparent_aucs)),
-    sprintf("[%.3f, %.3f]", min(cv_aucs), max(cv_aucs)),
-    ifelse(optimism_mean < 0.02, "Minimal",
-           ifelse(optimism_mean < 0.05, "Moderate", "Substantial")),
-    "Variability across imputations",
-    "Variability across imputations"
+  Metric = c("Apparent AUC", "CV AUC", "Optimism"),
+  Value  = c(apparent_auc_mean, cv_auc_mean, optimism_mean),
+  Lower  = c(apparent_auc_lower, cv_auc_lower, NA),
+  Upper  = c(apparent_auc_upper, cv_auc_upper, NA),
+  Formatted = c(
+    sprintf("%.3f [%.3f, %.3f]", apparent_auc_mean, apparent_auc_lower, apparent_auc_upper),
+    sprintf("%.3f [%.3f, %.3f]", cv_auc_mean, cv_auc_lower, cv_auc_upper),
+    sprintf("%.3f", optimism_mean)
+  ),
+  CI_Method = c(
+    "Loaded from final_regression_results_revised.rds (identical to regression chunk)",
+    "Bootstrap (boot.n=2000), averaged across imputations",
+    "Point estimate only"
   )
 )
 
 cv_details <- tibble(
-  Imputation   = 1:length(imputed_list),
-  Apparent_AUC = apparent_aucs,
-  CV_AUC       = cv_aucs,
-  Optimism     = apparent_aucs - cv_aucs
+  Imputation     = 1:length(imputed_list),
+  Apparent_AUC   = apparent_aucs,
+  CV_AUC         = cv_aucs,
+  CV_Lower       = cv_lowers,
+  CV_Upper       = cv_uppers,
+  Optimism       = apparent_aucs - cv_aucs
 )
 
 report <- c(
@@ -7015,9 +7047,16 @@ report <- c(
   sprintf("Sample size: %d", nrow(imputed_list[[1]])),
   sprintf("Imputations: %d", length(imputed_list)),
   "",
+  "AUC CI METHOD:",
+  "  Apparent AUC: loaded directly from final_regression_results_revised.rds",
+  "                (guaranteed identical to regression chunk)",
+  sprintf("  CV AUC: Bootstrap (boot.n = %d), lower/upper averaged across imputations", boot.n),
+  "",
   "PERFORMANCE:",
-  sprintf("  Apparent AUC: %.3f (SD: %.3f)", apparent_auc_mean, apparent_auc_sd),
-  sprintf("  CV AUC:       %.3f (SD: %.3f)", cv_auc_mean, cv_auc_sd),
+  sprintf("  Apparent AUC: %.3f [%.3f, %.3f]",
+          apparent_auc_mean, apparent_auc_lower, apparent_auc_upper),
+  sprintf("  CV AUC:       %.3f [%.3f, %.3f]",
+          cv_auc_mean, cv_auc_lower, cv_auc_upper),
   sprintf("  Optimism:     %.3f", optimism_mean),
   "",
   "INTERPRETATION:",
@@ -7061,7 +7100,8 @@ cat("═════════════════════════
 cat("CROSS-VALIDATION ON IMPUTED DATA COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat(sprintf("Model 3 (VSURF Prediction) cross-validated AUC = %.3f\n", cv_auc_mean))
+cat(sprintf("Model 3 (VSURF Prediction) cross-validated AUC = %.3f [%.3f, %.3f]\n",
+            cv_auc_mean, cv_auc_lower, cv_auc_upper))
 cat("This validates the data-driven variable selection approach.\n\n")
 ```
 
