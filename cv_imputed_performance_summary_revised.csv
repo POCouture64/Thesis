@@ -1,6 +1,4 @@
-Metric,Value,Interpretation
-Apparent AUC (Mean),0.732597623089983,"[0.733, 0.733]"
-CV AUC (Mean),0.7072014714204867,"[0.707, 0.707]"
-Optimism,0.02539615166949627,Moderate
-Apparent SD,0,Variability across imputations
-CV SD,0,Variability across imputations
+Metric,Value,Lower,Upper,Formatted,CI_Method
+Apparent AUC,0.732597623089983,0.6704234976301641,0.791482827532541,"0.733 [0.670, 0.791]",Loaded from final_regression_results_revised.rds (identical to regression chunk)
+CV AUC,0.712031338426712,0.6489491811686474,0.7721877873868137,"0.712 [0.649, 0.772]","Bootstrap (boot.n=2000), averaged across imputations"
+Optimism,0.02056628466327104,NA,NA,0.021,Point estimate only

@@ -3188,6 +3188,14 @@ cat("═════════════════════════
 cat("✓ MULTIPLE IMPUTATION COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 ```
+## Post Hoc Linear Reg
+```{r}
+# Linear regression: ciss11 ~ phq2_score (complete cases)
+complete_data <- SIMOA_analysis[complete.cases(SIMOA_analysis[, c("ciss11", "phq2_score")]), ]
+
+model <- lm(ciss11 ~ phq2_score, data = complete_data)
+summary(model)
+```
 
 
 
@@ -6484,21 +6492,31 @@ cat("Summaries extracted\n\n")
 cat("PART F: Calculating AUC\n")
 cat("─────────────────────────────────────────────────────────────\n\n")
 
-calc_auc <- function(fit_mira, imputed_list) {
-  m    <- length(imputed_list)
-  aucs <- numeric(m)
+calc_auc <- function(fit_mira, imputed_list, boot.n = 2000) {
+
+  m      <- length(imputed_list)
+  aucs   <- numeric(m)
+  lowers <- numeric(m)
+  uppers <- numeric(m)
 
   for(i in 1:m) {
-    pred_i  <- predict(fit_mira[[i]], type = "response")
-    roc_i   <- roc(imputed_list[[i]][[outcome_var]], pred_i, quiet = TRUE)
+
+    pred_i <- predict(fit_mira[[i]], type = "response")
+    roc_i  <- roc(imputed_list[[i]][[outcome_var]], pred_i, quiet = TRUE)
+
     aucs[i] <- as.numeric(auc(roc_i))
+
+    # BOOTSTRAP CI
+    ci_i <- ci.auc(roc_i, method = "bootstrap", boot.n = boot.n)
+
+    lowers[i] <- ci_i[1]
+    uppers[i] <- ci_i[3]
   }
 
   data.frame(
     AUC_mean  = mean(aucs),
-    AUC_sd    = sd(aucs),
-    AUC_lower = mean(aucs) - 1.96 * sd(aucs),
-    AUC_upper = mean(aucs) + 1.96 * sd(aucs)
+    AUC_lower = mean(lowers),
+    AUC_upper = mean(uppers)
   )
 }
 

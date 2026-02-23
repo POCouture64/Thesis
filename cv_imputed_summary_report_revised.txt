@@ -7,10 +7,15 @@ Predictors: 4 (DBAS_Medications, CISS_Emotion, BFI_Extraversion, BFI_Conscientio
 Sample size: 397
 Imputations: 20
 
+AUC CI METHOD:
+  Apparent AUC: loaded directly from final_regression_results_revised.rds
+                (guaranteed identical to regression chunk)
+  CV AUC: Bootstrap (boot.n = 2000), lower/upper averaged across imputations
+
 PERFORMANCE:
-  Apparent AUC: 0.733 (SD: 0.000)
-  CV AUC:       0.707 (SD: 0.000)
-  Optimism:     0.025
+  Apparent AUC: 0.733 [0.670, 0.791]
+  CV AUC:       0.712 [0.649, 0.772]
+  Optimism:     0.021
 
 INTERPRETATION:
   MODERATE optimism (0.02-0.05)
@@ -23,8 +28,8 @@ Report both apparent and CV AUC. Use CV estimate for external
 validation planning.
 
 FOLD STABILITY:
-  Mean:  0.719
-  SD:    0.096
-  Range: 0.603 to 0.824
+  Mean:  0.720
+  SD:    0.014
+  Range: 0.700 to 0.746
 
 ═══════════════════════════════════════════════════════════════
