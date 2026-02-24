@@ -8011,5 +8011,645 @@ cat(sprintf("ROBUSTNESS: %d/%d predictors remain significant\n\n",
 ```
 
 
+## Complete Case Analysis
+```{r}
+#==============================================================================
+# COMPLETE CASE SENSITIVITY ANALYSIS
+#==============================================================================
+# Purpose:
+#   1. Apply identical reverse coding and subscale creation from Chunks 6 & 9
+#      to the original SIMOA_analysis dataset (pre-imputation)
+#   2. Compare MI results to complete case analysis for Models 3 & 4
+#
+# Models compared:
+#   - Model 3: VSURF Prediction personality vars only (MI vs CC)
+#   - Model 4: VSURF Prediction + age + sex (MI vs CC)
+#     * age and sex included as adjusters — ORs compared for ALL terms
+#
+# Complete cases defined as: non-missing on all Model 4 variables + outcome
+#   (ensures Models 3 CC and 4 CC use identical case pool)
+#
+# Reverse coding (identical to Chunk 6):
+#   BFI (5 items):   reserved, lazy, relaxed, few_interests, find_fault (6 - x)
+#   SURPS (6 items): surps1, surps4, surps7, surps13, surps20, surps23 (5 - x)
+#   DBAS:  No reverse coding needed
+#   CISS:  No reverse coding needed
+#
+# Subscales (identical to Chunk 9, mean scores, na.rm = FALSE):
+#   BFI:   Extraversion, Agreeableness, Conscientiousness, Neuroticism, Openness
+#   SURPS: Impulsivity, Sensation_Seeking, Hopelessness, Anxiety_Sensitivity
+#   DBAS:  Consequences, Worry_Helplessness, Expectations, Medications, Total
+#   CISS:  Task, Emotion, Avoidance
+#==============================================================================
 
+library(tidyverse)
+library(pROC)
+library(broom)
+library(car)
 
+cat("\n")
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("COMPLETE CASE SENSITIVITY ANALYSIS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+#==============================================================================
+# PART A: LOAD DATA AND SAVED RESULTS
+#==============================================================================
+
+cat("PART A: Loading data and saved results\n")
+cat("─────────────────────────────────────────────────────────────\n\n")
+
+if(!file.exists("SIMOA_analysis.rds")) {
+  stop("ERROR: SIMOA_analysis.rds not found. Run Chunk 6 first.")
+}
+SIMOA_cc <- readRDS("SIMOA_analysis.rds")
+cat(sprintf("✓ Loaded SIMOA_analysis: %d rows × %d columns\n\n",
+            nrow(SIMOA_cc), ncol(SIMOA_cc)))
+
+if(!file.exists("final_regression_results_revised.rds")) {
+  stop("ERROR: Run final regression chunk first.")
+}
+final_results <- readRDS("final_regression_results_revised.rds")
+cat("✓ Loaded final_regression_results_revised.rds\n\n")
+
+# Pull variable sets directly from saved MI results (mirrors your LR chunk)
+outcome_var      <- "scrn_stopped_bzra"
+personality_vars <- final_results$variables$model3          # 4 VSURF Prediction vars
+demographics     <- final_results$variables$vsurf_demographics  # age + sex
+all_model_vars   <- final_results$variables$model4          # personality + demographics
+
+cat("VARIABLE SETS:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat(sprintf("Outcome:              %s\n", outcome_var))
+cat(sprintf("Model 3 variables:    %s\n", paste(personality_vars, collapse = ", ")))
+cat(sprintf("Model 4 variables:    %s\n", paste(all_model_vars, collapse = ", ")))
+cat("\n")
+
+#==============================================================================
+# PART B: REVERSE CODING (IDENTICAL TO CHUNK 6)
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART B: REVERSE CODING\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+# BFI reverse coding (5-point scale: 6 - x)
+bfi_reverse <- c("reserved", "lazy", "relaxed", "few_interests", "find_fault")
+
+cat("BFI items to reverse (6 - x):\n")
+for(item in bfi_reverse) {
+  if(item %in% names(SIMOA_cc)) {
+    SIMOA_cc[[item]] <- 6 - SIMOA_cc[[item]]
+    cat(sprintf("  ✓ %s\n", item))
+  } else {
+    cat(sprintf("  ✗ %s NOT FOUND\n", item))
+  }
+}
+cat("\n")
+
+# SURPS reverse coding (4-point scale: 5 - x)
+surps_reverse <- c("surps1", "surps4", "surps7", "surps13", "surps20", "surps23")
+
+cat("SURPS items to reverse (5 - x):\n")
+for(item in surps_reverse) {
+  if(item %in% names(SIMOA_cc)) {
+    SIMOA_cc[[item]] <- 5 - SIMOA_cc[[item]]
+    cat(sprintf("  ✓ %s\n", item))
+  } else {
+    cat(sprintf("  ✗ %s NOT FOUND\n", item))
+  }
+}
+cat("\n")
+
+cat("DBAS: No reverse coding needed\n")
+cat("CISS: No reverse coding needed\n\n")
+
+#==============================================================================
+# PART C: CREATE SUBSCALES (IDENTICAL TO CHUNK 9)
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART C: CREATING SUBSCALES (MEAN SCORES)\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+cat("NOTE: na.rm = FALSE — participant needs all items within a subscale\n")
+cat("      (matches Chunk 9 approach)\n\n")
+
+make_subscale <- function(data, items, var_name) {
+  available <- items[items %in% names(data)]
+  missing   <- items[!items %in% names(data)]
+
+  if(length(missing) > 0) {
+    cat(sprintf("  ⚠️  %s: missing items: %s\n",
+                var_name, paste(missing, collapse = ", ")))
+  }
+  if(length(available) == 0) {
+    cat(sprintf("  ✗  %s: no items found - skipping\n", var_name))
+    return(data)
+  }
+
+  data[[var_name]] <- rowMeans(data[, available, drop = FALSE], na.rm = FALSE)
+  n_complete <- sum(!is.na(data[[var_name]]))
+  cat(sprintf("  ✓  %-35s: %d/%d items, %d complete cases\n",
+              var_name, length(available), length(items), n_complete))
+  return(data)
+}
+
+# BFI-10
+cat("BFI-10 Subscales:\n")
+SIMOA_cc <- make_subscale(SIMOA_cc, c("reserved", "outgoing"),         "BFI_Extraversion")
+SIMOA_cc <- make_subscale(SIMOA_cc, c("find_fault", "trusting"),       "BFI_Agreeableness")
+SIMOA_cc <- make_subscale(SIMOA_cc, c("lazy", "thorough"),             "BFI_Conscientiousness")
+SIMOA_cc <- make_subscale(SIMOA_cc, c("relaxed", "nervous"),           "BFI_Neuroticism")
+SIMOA_cc <- make_subscale(SIMOA_cc, c("few_interests", "imagination"), "BFI_Openness")
+cat("\n")
+
+# SURPS
+cat("SURPS Subscales:\n")
+SIMOA_cc <- make_subscale(SIMOA_cc, paste0("surps", c(2, 5, 11, 15, 22)),         "SURPS_Impulsivity")
+SIMOA_cc <- make_subscale(SIMOA_cc, paste0("surps", c(3, 6, 9, 12, 16, 19)),      "SURPS_Sensation_Seeking")
+SIMOA_cc <- make_subscale(SIMOA_cc, paste0("surps", c(1, 4, 7, 13, 17, 20, 23)), "SURPS_Hopelessness")
+SIMOA_cc <- make_subscale(SIMOA_cc, paste0("surps", c(8, 10, 14, 18, 21)),        "SURPS_Anxiety_Sensitivity")
+cat("\n")
+
+# DBAS-16
+cat("DBAS-16 Subscales:\n")
+SIMOA_cc <- make_subscale(SIMOA_cc, paste0("dbas_", c(5, 7, 9, 12, 16)),      "DBAS_Consequences")
+SIMOA_cc <- make_subscale(SIMOA_cc, paste0("dbas_", c(3, 4, 8, 10, 11, 14)), "DBAS_Worry_Helplessness")
+SIMOA_cc <- make_subscale(SIMOA_cc, c("dbas1", "dbas_2"),                     "DBAS_Expectations")
+SIMOA_cc <- make_subscale(SIMOA_cc, paste0("dbas_", c(6, 13, 15)),            "DBAS_Medications")
+SIMOA_cc <- make_subscale(SIMOA_cc, c("dbas1", paste0("dbas_", 2:16)),        "DBAS_Total")
+cat("\n")
+
+# CISS
+cat("CISS Subscales:\n")
+SIMOA_cc <- make_subscale(SIMOA_cc, paste0("ciss", c(2, 6, 8, 11, 13, 16, 19)), "CISS_Task")
+SIMOA_cc <- make_subscale(SIMOA_cc, paste0("ciss", c(3, 5, 10, 12, 14, 17, 20)),"CISS_Emotion")
+SIMOA_cc <- make_subscale(SIMOA_cc, paste0("ciss", c(1, 4, 7, 9, 15, 18, 21)),  "CISS_Avoidance")
+cat("\n")
+
+# Verify all required variables exist
+missing_vars <- all_model_vars[!all_model_vars %in% names(SIMOA_cc)]
+if(length(missing_vars) > 0) {
+  stop(sprintf("ERROR: These variables could not be created or found: %s",
+               paste(missing_vars, collapse = ", ")))
+} else {
+  cat("✓ All model variables successfully created/verified\n\n")
+}
+
+#==============================================================================
+# PART D: DEFINE COMPLETE CASES
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART D: DEFINING COMPLETE CASES\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+cat("NOTE: Complete cases defined on ALL Model 4 variables + outcome\n")
+cat("      (personality vars + age + sex + outcome)\n")
+cat("      Models 3 CC and 4 CC use the SAME case pool for fair comparison\n\n")
+
+vars_for_cc <- c(outcome_var, all_model_vars)
+
+cc_data <- SIMOA_cc %>%
+  select(all_of(vars_for_cc)) %>%
+  filter(complete.cases(.))
+
+n_total    <- nrow(SIMOA_cc)
+n_complete <- nrow(cc_data)
+n_excluded <- n_total - n_complete
+
+cat("COMPLETE CASE SUMMARY:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat(sprintf("Full sample:        %d\n", n_total))
+cat(sprintf("Complete cases:     %d (%.1f%%)\n",
+            n_complete, 100 * n_complete / n_total))
+cat(sprintf("Excluded (missing): %d (%.1f%%)\n\n",
+            n_excluded, 100 * n_excluded / n_total))
+
+n_events_cc    <- sum(cc_data[[outcome_var]], na.rm = TRUE)
+n_nonevents_cc <- n_complete - n_events_cc
+
+cat("OUTCOME IN COMPLETE CASES:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat(sprintf("Discontinued (1): %d (%.1f%%)\n",
+            n_events_cc, 100 * n_events_cc / n_complete))
+cat(sprintf("Continued (0):    %d (%.1f%%)\n",
+            n_nonevents_cc, 100 * n_nonevents_cc / n_complete))
+cat(sprintf("EPV (Model 3):    %.1f\n", n_events_cc / length(personality_vars)))
+cat(sprintf("EPV (Model 4):    %.1f\n\n", n_events_cc / length(all_model_vars)))
+
+# Keep sex NUMERIC (do not convert to factor)
+# This ensures glm() stores the coefficient as "sex" (matching MI),
+# rather than expanding to "sexMale" which would break the CC vs MI join.
+# Sex is coded 1 = Female, 2 = Male — the OR for "sex" represents
+# the odds of discontinuation per unit increase (i.e. Male vs Female).
+if("sex" %in% names(cc_data)) {
+  cc_data$sex <- as.numeric(cc_data$sex)
+  cat("✓ sex kept as numeric (1 = Female, 2 = Male) to match MI term name\n\n")
+}
+
+#==============================================================================
+# PART E: FIT COMPLETE CASE MODELS
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART E: FITTING COMPLETE CASE MODELS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+# Formulas mirror your LR chunk exactly
+formula_m3_cc <- as.formula(
+  paste(outcome_var, "~", paste(personality_vars, collapse = " + "))
+)
+formula_m4_cc <- as.formula(
+  paste(outcome_var, "~", paste(all_model_vars, collapse = " + "))
+)
+
+cat(sprintf("Model 3 CC formula: %s\n", deparse(formula_m3_cc)))
+cat(sprintf("Model 4 CC formula: %s\n\n", deparse(formula_m4_cc)))
+
+cat("Fitting Model 3 CC...\n")
+model3_cc <- glm(formula_m3_cc, data = cc_data, family = binomial())
+cat("✓ Model 3 CC fitted\n")
+
+cat("Fitting Model 4 CC...\n")
+model4_cc <- glm(formula_m4_cc, data = cc_data, family = binomial())
+cat("✓ Model 4 CC fitted\n\n")
+
+#==============================================================================
+# PART F: EXTRACT CC RESULTS
+#==============================================================================
+
+cat("PART F: Extracting complete case results\n")
+cat("─────────────────────────────────────────────────────────────\n\n")
+
+extract_cc_results <- function(model, model_name) {
+  broom::tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
+    filter(term != "(Intercept)") %>%
+    mutate(
+      OR_CI = sprintf("%.2f [%.2f, %.2f]", estimate, conf.low, conf.high),
+      sig   = case_when(
+        p.value < 0.001 ~ "***",
+        p.value < 0.01  ~ "**",
+        p.value < 0.05  ~ "*",
+        p.value < 0.10  ~ ".",
+        TRUE            ~ ""
+      ),
+      model = model_name
+    ) %>%
+    select(model, term, OR = estimate, OR_lower = conf.low,
+           OR_upper = conf.high, OR_CI, p.value, sig)
+}
+
+results_m3_cc <- extract_cc_results(model3_cc, "Model 3 CC")
+results_m4_cc <- extract_cc_results(model4_cc, "Model 4 CC")
+
+cat("MODEL 3 CC RESULTS:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(results_m3_cc %>% select(term, OR_CI, p.value, sig), row.names = FALSE)
+cat("\n")
+
+cat("MODEL 4 CC RESULTS (personality vars + age + sex):\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(results_m4_cc %>% select(term, OR_CI, p.value, sig), row.names = FALSE)
+cat("\n")
+
+#==============================================================================
+# PART G: CALCULATE CC AUC
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART G: AUC FOR COMPLETE CASE MODELS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+calc_cc_auc <- function(model, data, outcome_var, boot.n = 2000) {
+  pred    <- predict(model, type = "response")
+  roc_obj <- roc(data[[outcome_var]], pred, quiet = TRUE)
+  auc_val <- as.numeric(auc(roc_obj))
+  ci_vals <- ci.auc(roc_obj, method = "bootstrap", boot.n = boot.n)
+  list(
+    auc       = auc_val,
+    auc_lower = ci_vals[1],
+    auc_upper = ci_vals[3],
+    formatted = sprintf("%.3f [%.3f, %.3f]", auc_val, ci_vals[1], ci_vals[3])
+  )
+}
+
+set.seed(12345)
+cat("Calculating AUC for Model 3 CC (bootstrap CI, 2000 iterations)...\n")
+auc_m3_cc <- calc_cc_auc(model3_cc, cc_data, outcome_var)
+
+set.seed(12345)
+cat("Calculating AUC for Model 4 CC (bootstrap CI, 2000 iterations)...\n")
+auc_m4_cc <- calc_cc_auc(model4_cc, cc_data, outcome_var)
+
+cat(sprintf("\n✓ Model 3 CC AUC: %s\n", auc_m3_cc$formatted))
+cat(sprintf("✓ Model 4 CC AUC: %s\n\n", auc_m4_cc$formatted))
+
+#==============================================================================
+# PART H: COMPARE CC vs MI — MODEL 3
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART H: CC vs MI COMPARISON — MODEL 3\n")
+cat("(VSURF Prediction personality variables only)\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+# Pull MI Model 3 summary — personality vars only
+mi_m3 <- final_results$summaries$model3 %>%
+  filter(term != "(Intercept)") %>%
+  select(term, MI_OR = OR, MI_OR_lower = OR_lower,
+         MI_OR_upper = OR_upper, MI_p = p.value) %>%
+  mutate(
+    MI_OR_CI = sprintf("%.2f [%.2f, %.2f]", MI_OR, MI_OR_lower, MI_OR_upper),
+    MI_sig   = case_when(
+      MI_p < 0.001 ~ "***", MI_p < 0.01 ~ "**",
+      MI_p < 0.05  ~ "*",   MI_p < 0.10 ~ ".",
+      TRUE ~ ""
+    )
+  )
+
+comparison_m3 <- full_join(
+  results_m3_cc %>% select(term, CC_OR = OR, CC_OR_lower = OR_lower,
+                             CC_OR_upper = OR_upper, CC_OR_CI = OR_CI,
+                             CC_p = p.value, CC_sig = sig),
+  mi_m3,
+  by = "term"
+) %>%
+  mutate(
+    OR_change_pct = round(100 * (CC_OR - MI_OR) / MI_OR, 1),
+    Direction     = ifelse(CC_OR > MI_OR, "CC higher", "CC lower"),
+    Sig_change    = case_when(
+      CC_p < 0.05 & MI_p >= 0.05 ~ "Gained sig in CC",
+      CC_p >= 0.05 & MI_p < 0.05 ~ "Lost sig in CC",
+      CC_p < 0.05 & MI_p < 0.05  ~ "Both significant",
+      TRUE                        ~ "Both non-significant"
+    )
+  ) %>%
+  select(term, MI_OR_CI, MI_sig, CC_OR_CI, CC_sig,
+         OR_change_pct, Direction, Sig_change)
+
+cat("MODEL 3: CC vs MI COMPARISON\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(comparison_m3, row.names = FALSE)
+cat("\n")
+
+#==============================================================================
+# PART I: COMPARE CC vs MI — MODEL 4 (ALL TERMS INCLUDING AGE & SEX)
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART I: CC vs MI COMPARISON — MODEL 4\n")
+cat("(VSURF Prediction + age + sex — ALL terms including demographics)\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+# Pull MI Model 4 summary — includes personality vars AND age + sex
+mi_m4 <- final_results$summaries$model4 %>%
+  filter(term != "(Intercept)") %>%
+  select(term, MI_OR = OR, MI_OR_lower = OR_lower,
+         MI_OR_upper = OR_upper, MI_p = p.value) %>%
+  mutate(
+    MI_OR_CI = sprintf("%.2f [%.2f, %.2f]", MI_OR, MI_OR_lower, MI_OR_upper),
+    MI_sig   = case_when(
+      MI_p < 0.001 ~ "***", MI_p < 0.01 ~ "**",
+      MI_p < 0.05  ~ "*",   MI_p < 0.10 ~ ".",
+      TRUE ~ ""
+    )
+  )
+
+comparison_m4 <- full_join(
+  results_m4_cc %>% select(term, CC_OR = OR, CC_OR_lower = OR_lower,
+                             CC_OR_upper = OR_upper, CC_OR_CI = OR_CI,
+                             CC_p = p.value, CC_sig = sig),
+  mi_m4,
+  by = "term"
+) %>%
+  mutate(
+    OR_change_pct = round(100 * (CC_OR - MI_OR) / MI_OR, 1),
+    Direction     = ifelse(CC_OR > MI_OR, "CC higher", "CC lower"),
+    Sig_change    = case_when(
+      CC_p < 0.05 & MI_p >= 0.05 ~ "Gained sig in CC",
+      CC_p >= 0.05 & MI_p < 0.05 ~ "Lost sig in CC",
+      CC_p < 0.05 & MI_p < 0.05  ~ "Both significant",
+      TRUE                        ~ "Both non-significant"
+    ),
+    # Flag whether this term is a personality var or demographic adjuster
+    Variable_type = case_when(
+      term %in% personality_vars ~ "Personality (VSURF Prediction)",
+      term %in% demographics     ~ "Demographic adjuster",
+      TRUE                       ~ "Other"
+    )
+  ) %>%
+  select(Variable_type, term, MI_OR_CI, MI_sig, CC_OR_CI, CC_sig,
+         OR_change_pct, Direction, Sig_change)
+
+cat("MODEL 4: CC vs MI COMPARISON (all terms)\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(comparison_m4, row.names = FALSE)
+cat("\n")
+
+# Separate summaries for personality vs demographics
+cat("MODEL 4 — PERSONALITY VARIABLES:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(comparison_m4 %>%
+        filter(Variable_type == "Personality (VSURF Prediction)") %>%
+        select(-Variable_type),
+      row.names = FALSE)
+cat("\n")
+
+cat("MODEL 4 — DEMOGRAPHIC ADJUSTERS (age & sex):\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(comparison_m4 %>%
+        filter(Variable_type == "Demographic adjuster") %>%
+        select(-Variable_type),
+      row.names = FALSE)
+cat("\n")
+
+#==============================================================================
+# PART J: AUC COMPARISON TABLE
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART J: AUC COMPARISON SUMMARY\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+mi_perf <- final_results$performance
+
+auc_comparison <- data.frame(
+  Model       = c("Model 3", "Model 4"),
+  Description = c("VSURF Prediction (personality only)",
+                  "VSURF Prediction + age + sex"),
+  N_MI = nrow(SIMOA_cc),
+  N_CC = n_complete,
+  MI_AUC = c(
+    sprintf("%.3f [%.3f, %.3f]",
+            mi_perf$AUC[mi_perf$Model == "Model 3"],
+            mi_perf$AUC_Lower[mi_perf$Model == "Model 3"],
+            mi_perf$AUC_Upper[mi_perf$Model == "Model 3"]),
+    sprintf("%.3f [%.3f, %.3f]",
+            mi_perf$AUC[mi_perf$Model == "Model 4"],
+            mi_perf$AUC_Lower[mi_perf$Model == "Model 4"],
+            mi_perf$AUC_Upper[mi_perf$Model == "Model 4"])
+  ),
+  CC_AUC   = c(auc_m3_cc$formatted, auc_m4_cc$formatted),
+  AUC_Diff = c(
+    round(auc_m3_cc$auc - mi_perf$AUC[mi_perf$Model == "Model 3"], 3),
+    round(auc_m4_cc$auc - mi_perf$AUC[mi_perf$Model == "Model 4"], 3)
+  )
+)
+
+cat("AUC COMPARISON (MI vs Complete Cases):\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(auc_comparison, row.names = FALSE)
+cat("\n")
+
+#==============================================================================
+# PART K: PUBLICATION-READY TABLE
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART K: PUBLICATION-READY COMPARISON TABLE\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+pub_table_m3 <- comparison_m3 %>%
+  mutate(Model = "Model 3",
+         `Variable Type` = "Personality") %>%
+  select(Model, `Variable Type`, Predictor = term,
+         `MI OR [95% CI]` = MI_OR_CI, `MI p` = MI_sig,
+         `CC OR [95% CI]` = CC_OR_CI, `CC p` = CC_sig,
+         `OR Change (%)` = OR_change_pct, Consistency = Sig_change)
+
+pub_table_m4 <- comparison_m4 %>%
+  mutate(Model = "Model 4") %>%
+  select(Model, `Variable Type` = Variable_type, Predictor = term,
+         `MI OR [95% CI]` = MI_OR_CI, `MI p` = MI_sig,
+         `CC OR [95% CI]` = CC_OR_CI, `CC p` = CC_sig,
+         `OR Change (%)` = OR_change_pct, Consistency = Sig_change)
+
+pub_table_combined <- bind_rows(pub_table_m3, pub_table_m4)
+
+cat("COMBINED PUBLICATION TABLE:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(pub_table_combined, row.names = FALSE)
+cat("\n")
+
+cat("FOOTNOTE:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat(sprintf(
+  "MI = Multiple imputation (N = %d). CC = Complete cases (N = %d, %.1f%% of full sample).\n",
+  nrow(SIMOA_cc), n_complete, 100 * n_complete / nrow(SIMOA_cc)
+))
+cat("Complete cases defined as non-missing on all model predictors and outcome.\n")
+cat("OR = odds ratio. CI = confidence interval. OR Change = 100*(CC OR - MI OR)/MI OR.\n")
+cat("*p < .05, **p < .01, ***p < .001.\n\n")
+
+#==============================================================================
+# PART L: INTERPRETATION
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART L: INTERPRETATION\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+n_robust_m3    <- sum(comparison_m3$Sig_change %in%
+                        c("Both significant", "Both non-significant"), na.rm = TRUE)
+n_robust_m4    <- sum(comparison_m4$Sig_change %in%
+                        c("Both significant", "Both non-significant"), na.rm = TRUE)
+mean_change_m3 <- mean(abs(comparison_m3$OR_change_pct), na.rm = TRUE)
+mean_change_m4 <- mean(abs(comparison_m4$OR_change_pct), na.rm = TRUE)
+
+# Split Model 4 by variable type
+mean_change_personality <- comparison_m4 %>%
+  filter(Variable_type == "Personality (VSURF Prediction)") %>%
+  summarise(mean = mean(abs(OR_change_pct), na.rm = TRUE)) %>%
+  pull(mean)
+
+mean_change_demo <- comparison_m4 %>%
+  filter(Variable_type == "Demographic adjuster") %>%
+  summarise(mean = mean(abs(OR_change_pct), na.rm = TRUE)) %>%
+  pull(mean)
+
+cat("MODEL 3 SUMMARY:\n")
+cat(sprintf("  MI AUC:                  %s\n", auc_comparison$MI_AUC[1]))
+cat(sprintf("  CC AUC:                  %s\n", auc_comparison$CC_AUC[1]))
+cat(sprintf("  AUC difference:          %.3f\n", auc_comparison$AUC_Diff[1]))
+cat(sprintf("  Consistent predictors:   %d/%d\n", n_robust_m3, nrow(comparison_m3)))
+cat(sprintf("  Mean OR change:          %.1f%%\n\n", mean_change_m3))
+
+cat("MODEL 4 SUMMARY:\n")
+cat(sprintf("  MI AUC:                  %s\n", auc_comparison$MI_AUC[2]))
+cat(sprintf("  CC AUC:                  %s\n", auc_comparison$CC_AUC[2]))
+cat(sprintf("  AUC difference:          %.3f\n", auc_comparison$AUC_Diff[2]))
+cat(sprintf("  Consistent predictors:   %d/%d\n", n_robust_m4, nrow(comparison_m4)))
+cat(sprintf("  Mean OR change (all):    %.1f%%\n", mean_change_m4))
+cat(sprintf("  Mean OR change (personality): %.1f%%\n", mean_change_personality))
+cat(sprintf("  Mean OR change (age/sex):     %.1f%%\n\n", mean_change_demo))
+
+overall_robust <- mean_change_m3 < 10 & n_robust_m3 == nrow(comparison_m3)
+
+if(overall_robust) {
+  cat("CONCLUSION: MI RESULTS ARE ROBUST\n")
+  cat("─────────────────────────────────────────────────────────────\n")
+  cat("Complete case analysis yields similar estimates to MI.\n")
+  cat("Imputation did not meaningfully change findings.\n\n")
+} else {
+  cat("CONCLUSION: NOTABLE DIFFERENCES BETWEEN MI AND CC\n")
+  cat("─────────────────────────────────────────────────────────────\n")
+  cat("Complete case analysis yields different estimates from MI.\n")
+  cat("This may reflect bias from non-random missingness.\n")
+  cat("MI estimates are preferred given MAR assumption is supported.\n\n")
+}
+
+cat("SUGGESTED MANUSCRIPT TEXT:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat(sprintf(
+'"As a sensitivity analysis, models were refit using complete cases
+only (n = %d, %.1f%% of the full sample). Odds ratios for personality
+predictors changed by a mean of %.1f%% (Model 3) and %.1f%% (Model 4)
+relative to MI estimates. For demographic adjusters in Model 4 (age
+and sex), OR change was %.1f%%. These findings [support / question]
+the robustness of the primary MI results (Model 3 CC AUC = %s vs.
+MI AUC = %s; Model 4 CC AUC = %s vs. MI AUC = %s)."\n\n',
+  n_complete, 100 * n_complete / nrow(SIMOA_cc),
+  mean_change_m3, mean_change_personality, mean_change_demo,
+  auc_m3_cc$formatted, auc_comparison$MI_AUC[1],
+  auc_m4_cc$formatted, auc_comparison$MI_AUC[2]
+))
+
+#==============================================================================
+# PART M: SAVE RESULTS
+#==============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART M: SAVING RESULTS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+cc_results <- list(
+  n_total        = n_total,
+  n_complete     = n_complete,
+  n_excluded     = n_excluded,
+  n_events_cc    = n_events_cc,
+  model3_cc      = list(model = model3_cc, results = results_m3_cc, auc = auc_m3_cc),
+  model4_cc      = list(model = model4_cc, results = results_m4_cc, auc = auc_m4_cc),
+  comparison_m3  = comparison_m3,
+  comparison_m4  = comparison_m4,
+  auc_comparison = auc_comparison,
+  pub_table      = pub_table_combined
+)
+
+saveRDS(cc_results,           "complete_case_sensitivity_results.rds")
+write_csv(pub_table_combined, "CC_vs_MI_comparison_table.csv")
+write_csv(auc_comparison,     "CC_vs_MI_AUC_comparison.csv")
+write_csv(comparison_m3,      "CC_vs_MI_model3_coefficients.csv")
+write_csv(comparison_m4,      "CC_vs_MI_model4_coefficients.csv")
+
+cat("✓ Saved: complete_case_sensitivity_results.rds\n")
+cat("✓ Saved: CC_vs_MI_comparison_table.csv (publication-ready)\n")
+cat("✓ Saved: CC_vs_MI_AUC_comparison.csv\n")
+cat("✓ Saved: CC_vs_MI_model3_coefficients.csv\n")
+cat("✓ Saved: CC_vs_MI_model4_coefficients.csv\n\n")
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("✓ COMPLETE CASE SENSITIVITY ANALYSIS COMPLETE\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+```
