@@ -1,0 +1,11 @@
+Model,Variable Type,Predictor,MI OR [95% CI],MI p,CC OR [95% CI],CC p,OR Change (%),Consistency
+Model 3,Personality,DBAS_Medications,"0.67 [0.58, 0.76]",***,"0.68 [0.58, 0.78]",***,1.4,Both significant
+Model 3,Personality,CISS_Emotion,"0.81 [0.60, 1.09]",,"0.85 [0.61, 1.20]",,6,Both non-significant
+Model 3,Personality,BFI_Extraversion,"1.40 [1.10, 1.78]",**,"0.87 [0.57, 1.34]",,-37.9,Lost sig in CC
+Model 3,Personality,BFI_Conscientiousness,"0.94 [0.70, 1.27]",,"1.49 [0.95, 2.36]",.,57.6,Both non-significant
+Model 4,Personality (VSURF Prediction),DBAS_Medications,"0.67 [0.58, 0.76]",***,"0.68 [0.58, 0.78]",***,1.6,Both significant
+Model 4,Personality (VSURF Prediction),CISS_Emotion,"0.78 [0.58, 1.06]",,"0.82 [0.58, 1.16]",,5.1,Both non-significant
+Model 4,Personality (VSURF Prediction),BFI_Extraversion,"1.38 [1.08, 1.76]",**,"0.88 [0.57, 1.35]",,-36.5,Lost sig in CC
+Model 4,Personality (VSURF Prediction),BFI_Conscientiousness,"0.95 [0.70, 1.27]",,"1.46 [0.93, 2.33]",,54.5,Both non-significant
+Model 4,Demographic adjuster,age,"0.97 [0.93, 1.01]",,"0.98 [0.93, 1.02]",,0.8,Both non-significant
+Model 4,Demographic adjuster,sex,"0.79 [0.46, 1.35]",,"0.69 [0.38, 1.23]",,-12.4,Both non-significant

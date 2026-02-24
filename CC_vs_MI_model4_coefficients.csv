@@ -1,0 +1,7 @@
+Variable_type,term,MI_OR_CI,MI_sig,CC_OR_CI,CC_sig,OR_change_pct,Direction,Sig_change
+Personality (VSURF Prediction),DBAS_Medications,"0.67 [0.58, 0.76]",***,"0.68 [0.58, 0.78]",***,1.6,CC higher,Both significant
+Personality (VSURF Prediction),CISS_Emotion,"0.78 [0.58, 1.06]",,"0.82 [0.58, 1.16]",,5.1,CC higher,Both non-significant
+Personality (VSURF Prediction),BFI_Extraversion,"1.38 [1.08, 1.76]",**,"0.88 [0.57, 1.35]",,-36.5,CC lower,Lost sig in CC
+Personality (VSURF Prediction),BFI_Conscientiousness,"0.95 [0.70, 1.27]",,"1.46 [0.93, 2.33]",,54.5,CC higher,Both non-significant
+Demographic adjuster,age,"0.97 [0.93, 1.01]",,"0.98 [0.93, 1.02]",,0.8,CC higher,Both non-significant
+Demographic adjuster,sex,"0.79 [0.46, 1.35]",,"0.69 [0.38, 1.23]",,-12.4,CC lower,Both non-significant
