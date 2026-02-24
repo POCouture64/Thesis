@@ -1,0 +1,5 @@
+model,term,n_imputed,baseline_p,tipping_point,abs_tipping,OR_at_tip,robustness,direction
+Model 3,DBAS_Medications,64,7.796654434566971e-10,NA,NA,NA,Robust — no flip found in +/-5 range,N/A
+Model 3,BFI_Extraversion,59,0.020015565068067915,NA,NA,NA,Robust — no flip found in +/-5 range,N/A
+Model 4,DBAS_Medications,64,2.9342652377297337e-9,NA,NA,NA,Robust — no flip found in +/-5 range,N/A
+Model 4,BFI_Extraversion,59,0.018342125185856633,-0.39999999999999947,0.39999999999999947,1.2363430245778229,Very sensitive (|delta| < 0.5),Imputed cases less likely discontinued
