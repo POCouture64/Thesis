@@ -1,0 +1,10 @@
+predictor,OR,p.value,sig
+age,0.997,0.8807,
+sex,0.721,0.2692,
+phq2_score,1.189,0.0318,*
+gen_health,0.524,0.1847,
+n_health_conditions,1.008,0.8581,
+med_quant,1.018,0.6019,
+education,1.133,0.4455,
+income,0.943,0.6513,
+employment,0.597,0.1727,

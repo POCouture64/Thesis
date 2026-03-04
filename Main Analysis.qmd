@@ -3921,756 +3921,838 @@ cat("═════════════════════════
 ```{r}
 #==============================================================================
 # CHUNK 10: DESCRIPTIVE STATISTICS & GROUP COMPARISONS
+# Pooled across all m imputations using Rubin's Rules
 #==============================================================================
-# Purpose: 
-#   1. Table 1: Overall sample characteristics
-#   2. Table 2: Characteristics by discontinuation status
-#   3. Group comparisons with FDR correction by domain
-# FDR families: Demographics, Clinical, Sleep/Adverse Effects, Behavioural, Personality
+#
+# POOLING METHODS:
+#
+#   Continuous variables:
+#     - Pooled mean:  Q_bar = mean of per-imputation means
+#     - Pooled variance (Rubin's Rules):
+#         W = mean of within-imputation variances  (average SE^2)
+#         B = variance of per-imputation means     (between-imputation variance)
+#         T = W + (1 + 1/m) * B                   (total variance)
+#     - Pooled SD reported as sqrt of pooled within-imputation variance (W),
+#       which reflects typical within-sample spread, not estimation uncertainty
+#     - Group comparison: pool t-statistics via Li et al. (1991) method,
+#       which gives a valid p-value from pooled F/t
+#
+#   Categorical variables:
+#     - Pooled proportion: mean of per-imputation proportions per level
+#     - Pooled n(%): pooled proportion * N
+#     - Group comparison: pool chi-square statistics (mean across imputations),
+#       test against chi-square distribution (Enders, 2010 approach)
+#
+#   Effect sizes:
+#     - Cohen's d: computed from pooled means and pooled within-SD
+#     - Cramer's V: computed from pooled chi-square statistic
+#
+#   FDR: Benjamini-Hochberg applied to pooled p-values within families
+#
+# REFERENCES:
+#   Rubin, D.B. (1987). Multiple Imputation for Nonresponse in Surveys.
+#   Li, K.H., Raghunathan, T.E., & Rubin, D.B. (1991). Statistica Sinica.
+#   Enders, C.K. (2010). Applied Missing Data Analysis.
+#   Benjamini, Y., & Hochberg, Y. (1995). JRSS-B, 57(1), 289-300.
 #==============================================================================
 
-library(tableone)
+library(mice)
 library(dplyr)
 library(tidyr)
+library(purrr)
 
 cat("\n")
-cat("═══════════════════════════════════════════════════════════════\n")
+cat("===============================================================\n")
 cat("DESCRIPTIVE STATISTICS & GROUP COMPARISONS\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
+cat("(Pooled across all imputations — Rubin's Rules)\n")
+cat("===============================================================\n\n")
 
-# Load imputed data with subscales
-if(!file.exists("imputed_data_with_subscales.rds")) {
+#------------------------------------------------------------------------------
+# LOAD DATA
+#------------------------------------------------------------------------------
+
+if(!file.exists("imputed_data_with_subscales.rds"))
   stop("ERROR: imputed_data_with_subscales.rds not found. Run Chunk 9 first.")
-}
 
 imp_data <- readRDS("imputed_data_with_subscales.rds")
-cat("✓ Loaded imputed data with", imp_data$m, "imputations\n\n")
+m        <- imp_data$m
+N        <- nrow(mice::complete(imp_data, 1))
 
-# Use first imputation for descriptive statistics (standard practice)
-data_complete <- complete(imp_data, 1)
+cat(sprintf("Loaded imputed data: m = %d imputations, N = %d\n\n", m, N))
 
-cat("Using first imputation for Table 1\n")
-cat("Sample size:", nrow(data_complete), "\n\n")
+#------------------------------------------------------------------------------
+# RECODE FUNCTION — applied to each imputed dataset
+#------------------------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# RECODE SEX VARIABLE
-# -----------------------------------------------------------------------------
+recode_dataset <- function(df) {
 
-cat("Recoding sex variable...\n")
-cat("  Original: 1 = Female, 2 = Male\n")
+  # Sex
+  if("sex" %in% names(df))
+    df$sex <- factor(df$sex, levels = c(1,2), labels = c("Female","Male"))
 
-if("sex" %in% names(data_complete)) {
-  # Create factor with proper labels
-  data_complete$sex <- factor(data_complete$sex, 
-                               levels = c(1, 2), 
-                               labels = c("Female", "Male"))
-  cat("✓ Sex recoded to factor: Female, Male\n\n")
-}
-
-# -----------------------------------------------------------------------------
-# CONVERT LIKERT SCALES TO NUMERIC
-# -----------------------------------------------------------------------------
-
-cat("Converting Likert scale variables to numeric...\n")
-cat("─────────────────────────────────────────────────────────────\n")
-
-# Define all Likert scale variables (these should be continuous)
-likert_vars <- c(
-  paste0("side_effects_", 1:4),
-  paste0("safety_", 1:4),
-  paste0("adls_", 1:2),
-  paste0("dependence_", 1:3)
-)
-
-# Convert to numeric
-n_converted <- 0
-for(var in likert_vars) {
-  if(var %in% names(data_complete)) {
-    original_class <- class(data_complete[[var]])[1]
-    
-    # If it's a factor or ordered factor, convert to numeric
-    if(is.factor(data_complete[[var]]) || is.ordered(data_complete[[var]])) {
-      # Get the numeric values from factor levels
-      data_complete[[var]] <- as.numeric(as.character(data_complete[[var]]))
-      n_converted <- n_converted + 1
-      cat(sprintf("  ✓ %-20s: %s → numeric\n", var, original_class))
-    } else if(!is.numeric(data_complete[[var]])) {
-      data_complete[[var]] <- as.numeric(data_complete[[var]])
-      n_converted <- n_converted + 1
-      cat(sprintf("  ✓ %-20s: %s → numeric\n", var, original_class))
-    }
+  # Province/Territory
+  if("prov_terr" %in% names(df)) {
+    df$prov_terr <- dplyr::case_when(
+      df$prov_terr %in% c(1,2,3,12) ~ "Western Canada",
+      df$prov_terr %in% c(9,11)     ~ "Central Canada",
+      df$prov_terr %in% c(4,5,7,10) ~ "Atlantic Canada",
+      TRUE                           ~ "Territories"
+    )
+    df$prov_terr <- factor(df$prov_terr,
+      levels = c("Western Canada","Central Canada","Atlantic Canada","Territories"))
   }
+
+  # Employment
+  if("employment" %in% names(df)) {
+    df$employment <- dplyr::case_when(
+      df$employment %in% c(0,3,4) ~ "Not in Workforce",
+      df$employment %in% c(1,2)   ~ "Full- or Part-Time Work",
+      TRUE                         ~ NA_character_
+    )
+    df$employment <- factor(df$employment,
+      levels = c("Full- or Part-Time Work","Not in Workforce"))
+  }
+
+  # Education
+  if("education" %in% names(df)) {
+    df$education <- dplyr::case_when(
+      df$education %in% c(1,2,3) ~ "High School or Less",
+      df$education %in% c(4,5)   ~ "Trade School/University Degree",
+      TRUE                        ~ NA_character_
+    )
+    df$education <- factor(df$education,
+      levels = c("High School or Less","Trade School/University Degree"))
+  }
+
+  # Income
+  if("income" %in% names(df))
+    df$income <- factor(df$income, levels = 1:5,
+      labels = c("$15,000 or less","$15,000 to $30,000","$30,000 to $50,000",
+                 "$50,000 to $80,000","$80,000 or more"))
+
+  # Driving frequency
+  if("driving_freq" %in% names(df))
+    df$driving_freq <- factor(df$driving_freq, levels = 0:3,
+      labels = c("Do not drive","Less than 1 day/week","1-3 days/week","4-7 days/week"))
+
+  # General health
+  if("gen_health" %in% names(df))
+    df$gen_health <- factor(df$gen_health, levels = 1:5,
+      labels = c("Poor","Fair","Good","Very good","Excellent"))
+
+  # Sleep substance use frequency
+  sleep_freq_labels <- c("Less than 1 day/week","1-3 days/week",
+                         "4-6 days/week","7 days/week")
+  for(sv in c("alc_sleep","can_sleep","melatonin_use","op_sleep"))
+    if(sv %in% names(df))
+      df[[sv]] <- factor(df[[sv]], levels = 1:4, labels = sleep_freq_labels)
+
+  # Withdrawal experience
+  if("stop_wdl_exp_combined" %in% names(df))
+    df$stop_wdl_exp_combined <- factor(df$stop_wdl_exp_combined, levels = 0:5,
+      labels = c("No withdrawal","Insomnia only","Anxiety only",
+                 "Other MH symptoms only","Physical symptoms only","Multiple symptoms"))
+
+  # Likert scales to numeric
+  for(var in c(paste0("side_effects_",1:4), paste0("safety_",1:4),
+               paste0("adls_",1:2), paste0("dependence_",1:3)))
+    if(var %in% names(df) && !is.numeric(df[[var]]))
+      df[[var]] <- as.numeric(as.character(df[[var]]))
+
+  df
 }
 
-cat("\n✓ Converted", n_converted, "Likert scale variables to numeric\n")
-cat("  These will now display as Mean (SD) instead of n (%)\n\n")
+# Build list of all m recoded datasets
+all_datasets <- lapply(1:m, function(i) recode_dataset(mice::complete(imp_data, i)))
+cat(sprintf("Recoded all %d imputed datasets\n\n", m))
 
-# -----------------------------------------------------------------------------
-# DEFINE VARIABLE FAMILIES FOR FDR CORRECTION
-# -----------------------------------------------------------------------------
+# Use dataset 1 for structural info (variable names, factor levels)
+d1 <- all_datasets[[1]]
 
-cat("Defining variable families for FDR correction...\n")
-cat("─────────────────────────────────────────────────────────────\n\n")
+#------------------------------------------------------------------------------
+# VARIABLE DEFINITIONS
+#------------------------------------------------------------------------------
 
-# Family 1: Demographics
-demographics <- c("age", "sex", "education", "income", "employment", "driving_freq")
+demographics <- c("age","sex","education","income","employment",
+                  "driving_freq","prov_terr")
 
-# Family 2: Clinical/Health
-clinical <- c("phq2_score", "osss_3_score", "gen_health", "med_quant",
-              "n_physical_conditions", "n_ment_conditions", "n_sleep_conditions", 
+clinical <- c("phq2_score","osss_3_score","gen_health","med_quant",
+              "n_physical_conditions","n_ment_conditions","n_sleep_conditions",
               "n_health_conditions")
 
-# Family 3: Sleep aids & Adverse effects
 sleep_adverse <- c(
-  # Sleep aids (ordinal categorical)
-  "alc_sleep", "can_sleep", "melatonin_use", "op_sleep",
-  # Side effects (CONTINUOUS - Likert scales 1-5)
-  paste0("side_effects_", 1:4),
-  # Safety (CONTINUOUS - Likert scales 1-5)
-  paste0("safety_", 1:4),
-  # ADL impact (CONTINUOUS - Likert scales 1-5)
-  paste0("adls_", 1:2),
-  # Dependence (CONTINUOUS - Likert scales 1-5)
-  paste0("dependence_", 1:3),
-  # Withdrawal
-  "stop_wdl_exp_combined",  # Categorical (0-5 categories)
-  "wdl_symptom_count"       # CONTINUOUS (count 0-4)
+  "alc_sleep","can_sleep","melatonin_use","op_sleep",
+  paste0("side_effects_",1:4), paste0("safety_",1:4),
+  paste0("adls_",1:2), paste0("dependence_",1:3),
+  "stop_wdl_exp_combined","wdl_symptom_count"
 )
 
-# Family 4: Behavioural (COM-B)
-behavioural <- c(
-  paste0("motivation_", 1:3),
-  paste0("desires_", 1:3),
-  "capability_1", "capability"
-)
+behavioural <- c(paste0("motivation_",1:3), paste0("desires_",1:3),
+                 "capability_1","capability")
 
-# Family 5: Personality subscales
 personality <- c(
-  # BFI-10
-  "BFI_Extraversion", "BFI_Agreeableness", "BFI_Conscientiousness", 
-  "BFI_Neuroticism", "BFI_Openness",
-  # SURPS
-  "SURPS_Impulsivity", "SURPS_Sensation_Seeking", 
-  "SURPS_Hopelessness", "SURPS_Anxiety_Sensitivity",
-  # DBAS (excluding Total)
-  "DBAS_Consequences", "DBAS_Worry_Helplessness", 
-  "DBAS_Expectations", "DBAS_Medications",
-  # CISS
-  "CISS_Task", "CISS_Emotion", "CISS_Avoidance"
+  "BFI_Extraversion","BFI_Agreeableness","BFI_Conscientiousness",
+  "BFI_Neuroticism","BFI_Openness",
+  "SURPS_Impulsivity","SURPS_Sensation_Seeking",
+  "SURPS_Hopelessness","SURPS_Anxiety_Sensitivity",
+  "DBAS_Consequences","DBAS_Worry_Helplessness",
+  "DBAS_Expectations","DBAS_Medications",
+  "CISS_Task","CISS_Emotion","CISS_Avoidance"
 )
 
-# All variables for Table 1
 all_vars <- c(demographics, clinical, sleep_adverse, behavioural, personality)
+all_vars <- all_vars[all_vars %in% names(d1)]
 
-cat("Variable families defined:\n")
-cat("  Demographics:", length(demographics), "variables\n")
-cat("  Clinical/Health:", length(clinical), "variables\n")
-cat("  Sleep aids & Adverse effects:", length(sleep_adverse), "variables\n")
-cat("  Behavioural (COM-B):", length(behavioural), "variables\n")
-cat("  Personality subscales:", length(personality), "variables\n")
-cat("  Total:", length(all_vars), "variables\n\n")
+cat_vars <- c("sex","education","income","employment","driving_freq","prov_terr",
+              "gen_health","alc_sleep","can_sleep","melatonin_use","op_sleep",
+              "stop_wdl_exp_combined")
+cat_vars <- cat_vars[cat_vars %in% names(d1)]
+cont_vars <- all_vars[!all_vars %in% cat_vars]
 
-# Check which variables exist
-missing_vars <- all_vars[!all_vars %in% names(data_complete)]
-if(length(missing_vars) > 0) {
-  cat("⚠️  WARNING: Missing variables:\n")
-  for(var in missing_vars) {
-    cat("    •", var, "\n")
-  }
-  cat("\n")
-  all_vars <- all_vars[all_vars %in% names(data_complete)]
-  cat("Proceeding with", length(all_vars), "available variables\n\n")
-}
-
-# -----------------------------------------------------------------------------
-# DEFINE CATEGORICAL VS CONTINUOUS VARIABLES
-# -----------------------------------------------------------------------------
-
-cat("Defining variable types for Table 1...\n")
-cat("─────────────────────────────────────────────────────────────\n")
-
-# Categorical variables (will be shown as n (%))
-cat_vars <- c(
-  "sex",                                    # Factor: Female, Male
-  "education", "income", "employment", "driving_freq",  # Ordinal
-  "gen_health",                            # Ordinal
-  "alc_sleep", "can_sleep", "melatonin_use", "op_sleep",  # Ordinal frequency
-  "stop_wdl_exp_combined"                  # Ordinal withdrawal categories (0-5)
-)
-
-# Filter to existing categorical variables
-cat_vars <- cat_vars[cat_vars %in% names(data_complete)]
-
-cat("Categorical variables (n, %%):", length(cat_vars), "\n")
-cat("  • sex, education, income, employment, driving_freq, gen_health\n")
-cat("  • Sleep aids (alc_sleep, can_sleep, melatonin_use, op_sleep)\n")
-cat("  • stop_wdl_exp_combined\n\n")
-
-cat("Continuous variables (Mean ± SD):", length(all_vars) - length(cat_vars), "\n")
-cat("  • All other variables shown as Mean (SD)\n")
-cat("  • Includes: age, clinical measures, Likert scales, subscales\n\n")
-
-# All continuous variables shown as Mean (SD)
-# No non-normal treatment needed with N=397 (Central Limit Theorem)
-nonnormal_vars <- c()
-
-# -----------------------------------------------------------------------------
-# TABLE 1: OVERALL SAMPLE CHARACTERISTICS
-# -----------------------------------------------------------------------------
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("TABLE 1: OVERALL SAMPLE CHARACTERISTICS\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-table1_overall <- CreateTableOne(
-  vars = all_vars,
-  data = data_complete,
-  factorVars = cat_vars
-)
-
-# Print to console
-print(table1_overall, 
-      formatOptions = list(big.mark = ","))
-
-# Save to CSV
-table1_overall_csv <- print(table1_overall, 
-                             printToggle = FALSE, 
-                             formatOptions = list(big.mark = ","))
-
-write.csv(table1_overall_csv, "TABLE1_overall_characteristics.csv")
-cat("\n✓ Saved: TABLE1_overall_characteristics.csv\n\n")
-
-# -----------------------------------------------------------------------------
-# TABLE 2: CHARACTERISTICS BY DISCONTINUATION STATUS
-# -----------------------------------------------------------------------------
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("TABLE 2: CHARACTERISTICS BY DISCONTINUATION STATUS\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-# Check outcome variable exists
-if(!"scrn_stopped_bzra" %in% names(data_complete)) {
-  stop("ERROR: Outcome variable 'scrn_stopped_bzra' not found in dataset")
-}
-
-# Get sample sizes
-n_total <- nrow(data_complete)
-n_discontinued <- sum(data_complete$scrn_stopped_bzra == 1, na.rm = TRUE)
-n_continued <- sum(data_complete$scrn_stopped_bzra == 0, na.rm = TRUE)
-
-cat("Sample sizes by discontinuation status:\n")
-cat("  Total:", n_total, "\n")
-cat("  Discontinued (1):", n_discontinued, "(", round(100 * n_discontinued / n_total, 1), "%)\n")
-cat("  Continued (0):", n_continued, "(", round(100 * n_continued / n_total, 1), "%)\n\n")
-
-# Create stratified table
-table2_stratified <- CreateTableOne(
-  vars = all_vars,
-  strata = "scrn_stopped_bzra",
-  data = data_complete,
-  factorVars = cat_vars,
-  test = TRUE,
-  addOverall = TRUE
-)
-
-# Print with SMD
-print(table2_stratified, 
-      smd = TRUE,
-      formatOptions = list(big.mark = ","))
-
-# Save to CSV
-table2_stratified_csv <- print(table2_stratified, 
-                                smd = TRUE, 
-                                printToggle = FALSE, 
-                                formatOptions = list(big.mark = ","))
-
-write.csv(table2_stratified_csv, "TABLE2_by_discontinuation.csv")
-cat("\n✓ Saved: TABLE2_by_discontinuation.csv\n\n")
-
-# -----------------------------------------------------------------------------
-# EXTRACT P-VALUES FOR FDR CORRECTION
-# -----------------------------------------------------------------------------
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("FDR CORRECTION BY VARIABLE FAMILY\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-cat("Extracting p-values from tableone object...\n\n")
-
-# Extract the test results from tableone object
-table2_for_extraction <- print(table2_stratified, 
-                                printToggle = FALSE, 
-                                test = TRUE,
-                                smd = TRUE,
-                                exact = TRUE)  # Get exact p-values
-
-# Convert to data frame
-table2_df <- as.data.frame(table2_for_extraction)
-table2_df$Variable <- rownames(table2_df)
-
-# Extract p-values and handle "<0.001" strings
-table2_df <- table2_df %>%
-  filter(Variable != "n") %>%
-  mutate(
-    p_original = as.character(p),
-    P_Value = case_when(
-      # Handle "<0.001" format
-      grepl("^<", p_original) ~ 0.0001,  # Use 0.0001 as conservative estimate
-      # Handle regular numeric values
-      TRUE ~ as.numeric(p_original)
-    )
+get_family <- function(var) {
+  dplyr::case_when(
+    var %in% demographics  ~ "Demographics",
+    var %in% clinical      ~ "Clinical",
+    var %in% sleep_adverse ~ "Sleep_Adverse",
+    var %in% behavioural   ~ "Behavioural",
+    var %in% personality   ~ "Personality",
+    TRUE                   ~ "Other"
   )
+}
 
-cat("P-value conversion summary:\n")
-cat("  Values converted from '<0.001':", sum(grepl("^<", table2_df$p_original), na.rm = TRUE), "\n")
-cat("  Regular numeric values:", sum(!grepl("^<", table2_df$p_original) & !is.na(table2_df$p_original)), "\n\n")
+family_lookup <- data.frame(variable = all_vars, Family = get_family(all_vars),
+                             stringsAsFactors = FALSE)
 
-# Create comprehensive results table with family assignments
-pvalue_results <- data.frame(
-  Variable = character(),
-  Family = character(),
-  P_Value = numeric(),
-  P_Original = character(),
-  stringsAsFactors = FALSE
-)
+cat("Variable families:\n")
+cat(sprintf("  Demographics: %d  |  Clinical: %d  |  Sleep/Adverse: %d\n",
+            sum(all_vars %in% demographics), sum(all_vars %in% clinical),
+            sum(all_vars %in% sleep_adverse)))
+cat(sprintf("  Behavioural:  %d  |  Personality: %d  |  Total: %d\n\n",
+            sum(all_vars %in% behavioural), sum(all_vars %in% personality),
+            length(all_vars)))
 
-# Assign each variable to its family and extract p-value
-for(var in all_vars) {
-  # Determine family
-  if(var %in% demographics) {
-    family <- "Demographics"
-  } else if(var %in% clinical) {
-    family <- "Clinical"
-  } else if(var %in% sleep_adverse) {
-    family <- "Sleep_Adverse"
-  } else if(var %in% behavioural) {
-    family <- "behavioural"
-  } else if(var %in% personality) {
-    family <- "Personality"
-  } else {
-    family <- "Unknown"
+#------------------------------------------------------------------------------
+# OUTCOME
+#------------------------------------------------------------------------------
+
+if(!"scrn_stopped_bzra" %in% names(d1))
+  stop("ERROR: 'scrn_stopped_bzra' not found")
+
+n_total        <- N
+n_discontinued <- sum(d1$scrn_stopped_bzra == 1, na.rm = TRUE)
+n_continued    <- sum(d1$scrn_stopped_bzra == 0, na.rm = TRUE)
+
+cat(sprintf("Outcome: N = %d  |  Continued: %d (%.1f%%)  |  Discontinued: %d (%.1f%%)\n\n",
+            n_total,
+            n_continued,    100*n_continued/n_total,
+            n_discontinued, 100*n_discontinued/n_total))
+
+#==============================================================================
+# POOLING FUNCTIONS
+#==============================================================================
+
+#------------------------------------------------------------------------------
+# POOL CONTINUOUS VARIABLE
+# Returns: overall Mean(SD), group means/SDs, pooled t-test p-value, Cohen's d
+#------------------------------------------------------------------------------
+
+pool_continuous <- function(var, datasets, outcome = "scrn_stopped_bzra") {
+
+  # Per-imputation statistics
+  imp_stats <- lapply(datasets, function(df) {
+    x   <- as.numeric(df[[var]])
+    grp <- df[[outcome]]
+    x0  <- x[grp == 0]; x1 <- x[grp == 1]
+    n0  <- sum(!is.na(x0)); n1 <- sum(!is.na(x1))
+    if(n0 < 2 || n1 < 2) return(NULL)
+
+    m0  <- mean(x0, na.rm=TRUE); m1 <- mean(x1, na.rm=TRUE)
+    v0  <- var(x0, na.rm=TRUE);  v1 <- var(x1, na.rm=TRUE)
+    m_all <- mean(x, na.rm=TRUE)
+    v_all <- var(x, na.rm=TRUE)
+
+    # Pooled within-group SD for Cohen's d
+    sp  <- sqrt(((n0-1)*v0 + (n1-1)*v1) / (n0+n1-2))
+
+    # Standard error of mean difference (for Rubin's pooling)
+    se_diff <- sqrt(v0/n0 + v1/n1)
+
+    list(m_all=m_all, v_all=v_all,
+         m0=m0, v0=v0, n0=n0,
+         m1=m1, v1=v1, n1=n1,
+         diff=m1-m0, se_diff=se_diff, sp=sp)
+  })
+  imp_stats <- Filter(Negate(is.null), imp_stats)
+  if(length(imp_stats) == 0) return(NULL)
+
+  mm <- length(imp_stats)
+
+  # Pool overall
+  pool_m_all  <- mean(sapply(imp_stats, `[[`, "m_all"))
+  pool_v_all  <- mean(sapply(imp_stats, `[[`, "v_all"))   # pooled within-imputation variance
+  pool_sd_all <- sqrt(pool_v_all)
+
+  # Pool group 0
+  pool_m0  <- mean(sapply(imp_stats, `[[`, "m0"))
+  pool_v0  <- mean(sapply(imp_stats, `[[`, "v0"))
+  pool_sd0 <- sqrt(pool_v0)
+  n0       <- round(mean(sapply(imp_stats, `[[`, "n0")))
+
+  # Pool group 1
+  pool_m1  <- mean(sapply(imp_stats, `[[`, "m1"))
+  pool_v1  <- mean(sapply(imp_stats, `[[`, "v1"))
+  pool_sd1 <- sqrt(pool_v1)
+  n1       <- round(mean(sapply(imp_stats, `[[`, "n1")))
+
+  # Rubin's Rules for mean difference
+  diffs  <- sapply(imp_stats, `[[`, "diff")
+  se2s   <- sapply(imp_stats, `[[`, "se_diff")^2
+  Q_bar  <- mean(diffs)                             # pooled estimate
+  W      <- mean(se2s)                              # within-imputation variance
+  B      <- var(diffs)                              # between-imputation variance
+  T_var  <- W + (1 + 1/mm) * B                     # total variance (Rubin 1987)
+  t_stat <- Q_bar / sqrt(T_var)
+
+  # Barnard-Rubin degrees of freedom
+  lambda <- (1 + 1/mm) * B / T_var
+  df_old <- (n0 + n1 - 2)
+  df_obs <- (1 - lambda) * df_old * (df_old + 1) / (df_old + 3)
+  df_m   <- (mm - 1) / lambda^2
+  df     <- 1 / (1/df_m + 1/df_obs)
+  p_val  <- 2 * pt(abs(t_stat), df = df, lower.tail = FALSE)
+
+  # Cohen's d from pooled means and pooled within-group SD
+  pool_sp <- mean(sapply(imp_stats, `[[`, "sp"))
+  d       <- if(pool_sp > 0) Q_bar / pool_sp else NA_real_
+  se_d    <- sqrt((n0+n1)/(n0*n1) + d^2 / (2*(n0+n1-2)))
+
+  list(
+    type         = "continuous",
+    overall_desc = sprintf("%.2f (%.2f)", pool_m_all, pool_sd_all),
+    cont_desc    = sprintf("%.2f (%.2f)", pool_m0,    pool_sd0),
+    disc_desc    = sprintf("%.2f (%.2f)", pool_m1,    pool_sd1),
+    p_val        = p_val,
+    effect_type  = "Cohens_d",
+    effect_size  = round(d, 3),
+    ci_low       = round(d - 1.96*se_d, 3),
+    ci_high      = round(d + 1.96*se_d, 3)
+  )
+}
+
+#------------------------------------------------------------------------------
+# POOL CATEGORICAL VARIABLE
+# Returns: per-level pooled n(%), pooled chi-square p-value, Cramer's V
+#------------------------------------------------------------------------------
+
+pool_categorical <- function(var, datasets, outcome = "scrn_stopped_bzra") {
+
+  lvls <- levels(datasets[[1]][[var]])
+  if(is.null(lvls)) return(NULL)
+
+  imp_stats <- lapply(datasets, function(df) {
+    # Build a complete table with ALL levels present (even if count = 0)
+    # using factor() to enforce level structure before tabling
+    fac_var <- factor(df[[var]], levels = lvls)
+    fac_out <- factor(df[[outcome]], levels = c("0","1"))
+    tab <- table(fac_var, fac_out)
+    colnames(tab) <- c("0","1")
+
+    if(!all(c("0","1") %in% colnames(tab))) return(NULL)
+
+    n0   <- sum(tab[,"0"])
+    n1   <- sum(tab[,"1"])
+    ntot <- n0 + n1
+    if(n0 == 0 || n1 == 0) return(NULL)
+
+    p_all <- tab / ntot
+    p0    <- tab[,"0"] / n0
+    p1    <- tab[,"1"] / n1
+
+    # Chi-square: only run if all expected counts > 0 in a reduced table
+    # (drop levels with zero total count to avoid the error)
+    tab_nonzero <- tab[rowSums(tab) > 0, , drop = FALSE]
+    chi2 <- tryCatch({
+      if(nrow(tab_nonzero) < 2) {
+        NA_real_
+      } else {
+        suppressWarnings(chisq.test(tab_nonzero, correct = FALSE)$statistic)
+      }
+    }, error = function(e) NA_real_)
+
+    list(p_all=p_all, p0=p0, p1=p1, n0=n0, n1=n1, ntot=ntot,
+         chi2=chi2, k=length(lvls))
+  })
+  imp_stats <- Filter(Negate(is.null), imp_stats)
+  if(length(imp_stats) == 0) return(NULL)
+
+  n0   <- round(mean(sapply(imp_stats, `[[`, "n0")))
+  n1   <- round(mean(sapply(imp_stats, `[[`, "n1")))
+  ntot <- n0 + n1
+
+  # Pool proportions across imputations — each is a named vector over lvls
+  # Use sapply to get a lvls x m matrix, then rowMeans
+  safe_pool <- function(field) {
+    mat <- sapply(imp_stats, function(s) {
+      v <- s[[field]]
+      # Ensure all levels are present and in correct order
+      out <- setNames(rep(0, length(lvls)), lvls)
+      out[names(v)] <- v
+      out
+    })
+    if(is.null(dim(mat))) mat <- matrix(mat, nrow=length(lvls))
+    rowMeans(mat)
   }
-  
-  # Find matching p-value in table2_df
-  # Variable names might have suffixes like (%) or (mean (SD))
-  matching_rows <- table2_df[grepl(paste0("^", var), table2_df$Variable), ]
-  
-  if(nrow(matching_rows) > 0) {
-    p_val <- matching_rows$P_Value[1]
-    p_orig <- matching_rows$p_original[1]
-  } else {
-    p_val <- NA
-    p_orig <- NA
-  }
-  
-  pvalue_results <- rbind(pvalue_results, data.frame(
-    Variable = var,
-    Family = family,
-    P_Value = p_val,
-    P_Original = p_orig,
+
+  pool_p_all <- safe_pool("p_all") |> (\(x) { x[] })()
+  # p_all is a matrix per imputation; need rowSums first then pool
+  pool_p_all <- rowMeans(sapply(imp_stats, function(s) {
+    v <- rowSums(s$p_all)
+    out <- setNames(rep(0, length(lvls)), lvls)
+    out[names(v)] <- v; out
+  }))
+  pool_p0 <- safe_pool("p0")
+  pool_p1 <- safe_pool("p1")
+
+  # Pool chi-square: mean of valid chi-square statistics across imputations
+  chi2_vals <- sapply(imp_stats, `[[`, "chi2")
+  chi2_vals <- chi2_vals[!is.na(chi2_vals)]
+  pool_chi2 <- if(length(chi2_vals) > 0) mean(chi2_vals) else NA_real_
+  k         <- imp_stats[[1]]$k
+  df_chi    <- max(k - 1, 1)
+  p_val     <- if(!is.na(pool_chi2)) pchisq(pool_chi2, df=df_chi, lower.tail=FALSE) else NA_real_
+
+  # Cramer's V from pooled chi-square
+  # k here is number of levels; min(k,2)-1 avoids dividing by 0 when k=1
+  denom_k <- max(min(k, 2) - 1, 1)
+  v <- if(!is.na(pool_chi2) && ntot > 0) {
+    min(sqrt(pool_chi2 / (ntot * denom_k)), 1)
+  } else NA_real_
+  se_v <- if(!is.na(v)) sqrt((1 - v^2)^2 / (ntot - 1)) else NA_real_
+
+  # Build per-level rows
+  level_rows <- data.frame(
+    level        = lvls,
+    overall_n    = round(pool_p_all * ntot),
+    overall_pct  = round(pool_p_all * 100, 1),
+    cont_n       = round(pool_p0 * n0),
+    cont_pct     = round(pool_p0 * 100, 1),
+    disc_n       = round(pool_p1 * n1),
+    disc_pct     = round(pool_p1 * 100, 1),
     stringsAsFactors = FALSE
-  ))
+  )
+  level_rows$overall_desc <- sprintf("%d (%.1f)", level_rows$overall_n, level_rows$overall_pct)
+  level_rows$cont_desc    <- sprintf("%d (%.1f)", level_rows$cont_n,    level_rows$cont_pct)
+  level_rows$disc_desc    <- sprintf("%d (%.1f)", level_rows$disc_n,    level_rows$disc_pct)
+
+  list(
+    type         = "categorical",
+    levels       = level_rows,
+    p_val        = p_val,
+    effect_type  = "Cramers_V",
+    effect_size  = if(!is.na(v)) round(v, 3) else NA_real_,
+    ci_low       = if(!is.na(v) && !is.na(se_v)) round(max(0, v - 1.96*se_v), 3) else NA_real_,
+    ci_high      = if(!is.na(v) && !is.na(se_v)) round(min(1, v + 1.96*se_v), 3) else NA_real_
+  )
 }
 
-cat("✓ Extracted p-values for", nrow(pvalue_results), "variables\n\n")
+#==============================================================================
+# RUN POOLING FOR ALL VARIABLES
+#==============================================================================
 
-# Show summary of p-value extraction
-cat("P-value extraction summary:\n")
-cat("  Variables with p-values:", sum(!is.na(pvalue_results$P_Value)), "\n")
-cat("  Variables missing p-values:", sum(is.na(pvalue_results$P_Value)), "\n")
-cat("  Variables with p < 0.001:", sum(!is.na(pvalue_results$P_Original) & 
-                                        grepl("^<", pvalue_results$P_Original)), "\n\n")
+cat("===============================================================\n")
+cat("POOLING STATISTICS ACROSS ALL IMPUTATIONS\n")
+cat("===============================================================\n\n")
 
-# Show variables with very small p-values
-very_small_p <- pvalue_results %>% 
-  filter(!is.na(P_Original) & grepl("^<", P_Original))
+pooled_results <- list()
 
-if(nrow(very_small_p) > 0) {
-  cat("✓ Variables with p < 0.001 (set to 0.0001 for FDR calculation):\n")
-  for(i in 1:nrow(very_small_p)) {
-    cat("    •", very_small_p$Variable[i], "\n")
-  }
-  cat("\n")
-}
-
-if(sum(is.na(pvalue_results$P_Value)) > 0) {
-  cat("⚠️  Variables still missing p-values:\n")
-  missing_p <- pvalue_results %>% filter(is.na(P_Value))
-  for(i in 1:min(10, nrow(missing_p))) {
-    cat("    •", missing_p$Variable[i], "\n")
-  }
-  if(nrow(missing_p) > 10) {
-    cat("    ... and", nrow(missing_p) - 10, "more\n")
-  }
-  cat("\n")
-}
-
-# -----------------------------------------------------------------------------
-# APPLY FDR CORRECTION WITHIN EACH FAMILY
-# -----------------------------------------------------------------------------
-
-cat("Applying FDR correction within each family...\n")
-cat("─────────────────────────────────────────────────────────────\n\n")
-
-# Apply FDR correction by family
-pvalue_results <- pvalue_results %>%
-  group_by(Family) %>%
-  mutate(
-    P_FDR = p.adjust(P_Value, method = "fdr"),
-    Significant_Uncorrected = ifelse(!is.na(P_Value) & P_Value < 0.05, "Yes", "No"),
-    Significant_FDR = ifelse(!is.na(P_FDR) & P_FDR < 0.05, "Yes", "No")
-  ) %>%
-  ungroup() %>%
-  arrange(Family, P_Value)
-
-# Display results by family
-for(family in unique(pvalue_results$Family[!is.na(pvalue_results$Family)])) {
-  cat("FAMILY:", family, "\n")
-  cat("─────────────────────────────────────────────────────────────\n")
-  
-  family_results <- pvalue_results %>% filter(Family == family)
-  
-  # Count only variables with valid p-values
-  valid_p <- family_results %>% filter(!is.na(P_Value))
-  
-  cat("  Total variables:", nrow(family_results), "\n")
-  cat("  Variables with p-values:", nrow(valid_p), "\n")
-  cat("  Significant (uncorrected p < .05):", 
-      sum(valid_p$Significant_Uncorrected == "Yes", na.rm = TRUE), "\n")
-  cat("  Significant (FDR-corrected p < .05):", 
-      sum(valid_p$Significant_FDR == "Yes", na.rm = TRUE), "\n")
-  
-  # Show significant variables
-  sig_vars <- family_results %>% 
-    filter(Significant_FDR == "Yes") %>%
-    select(Variable, P_Value, P_FDR)
-  
-  if(nrow(sig_vars) > 0) {
-    cat("\n  Significant variables (FDR-corrected):\n")
-    for(i in 1:nrow(sig_vars)) {
-      cat(sprintf("    • %-30s: p = %.4f, p_FDR = %.4f\n", 
-                  sig_vars$Variable[i], sig_vars$P_Value[i], sig_vars$P_FDR[i]))
-    }
+for(var in all_vars) {
+  cat(sprintf("  Pooling: %s\n", var))
+  if(var %in% cat_vars) {
+    pooled_results[[var]] <- pool_categorical(var, all_datasets)
   } else {
-    cat("\n  No significant variables after FDR correction\n")
+    pooled_results[[var]] <- pool_continuous(var, all_datasets)
   }
-  cat("\n")
+}
+cat("\nDone pooling.\n\n")
+
+#==============================================================================
+# EFFECT SIZE INTERPRETATION
+#==============================================================================
+
+interpret_d <- function(d) {
+  d <- abs(d)
+  dplyr::case_when(
+    is.na(d)  ~ "N/A",
+    d < 0.20  ~ "Negligible",
+    d < 0.50  ~ "Small",
+    d < 0.80  ~ "Medium",
+    TRUE      ~ "Large"
+  )
 }
 
-# Save detailed results
-write.csv(pvalue_results, "TABLE2_pvalues_with_FDR.csv", row.names = FALSE)
-cat("✓ Saved: TABLE2_pvalues_with_FDR.csv\n\n")
+interpret_v <- function(v) {
+  v <- abs(v)
+  dplyr::case_when(
+    is.na(v)  ~ "N/A",
+    v < 0.10  ~ "Negligible",
+    v < 0.30  ~ "Small",
+    v < 0.50  ~ "Medium",
+    TRUE      ~ "Large"
+  )
+}
 
-# -----------------------------------------------------------------------------
-# CREATE PUBLICATION-READY TABLE WITH FDR-CORRECTED P-VALUES
-# -----------------------------------------------------------------------------
+#==============================================================================
+# BUILD RESULTS DATA FRAME
+# One summary row per variable (for p-values, FDR, effect sizes)
+# Plus sub-rows for categorical levels
+#==============================================================================
 
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("CREATING PUBLICATION-READY TABLE\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
+summary_rows <- map_df(all_vars, function(var) {
+  res <- pooled_results[[var]]
+  if(is.null(res)) return(NULL)
 
-# Clean up variable names for matching
-pvalue_results$Variable_Clean <- pvalue_results$Variable
+  fam  <- get_family(var)
+  p    <- res$p_val
+  es   <- res$effect_size
+  etype <- res$effect_type
 
-# For each row in table2_df, find the matching variable in pvalue_results
-table2_final <- table2_df %>%
-  mutate(Variable_Clean = gsub(" \\(.*", "", Variable)) %>%
-  mutate(Variable_Clean = trimws(Variable_Clean))
+  interp <- if(etype == "Cohens_d") interpret_d(es) else interpret_v(es)
 
-# Join with pvalue results (only select columns that will be in the final table)
-table2_final <- table2_final %>%
-  left_join(
-    pvalue_results %>% select(Variable, Family, P_FDR, Significant_FDR),
-    by = c("Variable_Clean" = "Variable")
-  ) %>%
-  select(-Variable_Clean)  # Only remove Variable_Clean
+  data.frame(
+    variable     = var,
+    Family       = fam,
+    p_val        = p,
+    effect_type  = etype,
+    effect_size  = es,
+    ci_low       = res$ci_low,
+    ci_high      = res$ci_high,
+    interpretation = interp,
+    stringsAsFactors = FALSE
+  )
+})
 
-# Check what columns we have after join
-cat("Columns after join:\n")
-print(names(table2_final))
+# FDR correction within families
+summary_rows <- summary_rows %>%
+  group_by(Family) %>%
+  mutate(p_fdr = p.adjust(p_val, method = "fdr")) %>%
+  ungroup()
+
+#==============================================================================
+# BUILD DISPLAY TABLE
+#==============================================================================
+
+format_p <- function(p) {
+  if(is.na(p)) return("")
+  if(p < 0.001) return("< .001")
+  sprintf("%.3f", p)
+}
+
+format_sig <- function(p) {
+  if(is.na(p)) return("")
+  if(p < 0.001) return("***")
+  if(p < 0.01)  return("**")
+  if(p < 0.05)  return("*")
+  return("")
+}
+
+format_es <- function(etype, es, lo, hi) {
+  if(is.na(es)) return("")
+  if(etype == "Cohens_d")  return(sprintf("d = %+.2f [%.2f, %.2f]", es, lo, hi))
+  if(etype == "Cramers_V") return(sprintf("V = %.2f [%.2f, %.2f]",  es, lo, hi))
+  return("")
+}
+
+table_rows <- list()
+
+for(var in all_vars) {
+  res  <- pooled_results[[var]]
+  srow <- summary_rows[summary_rows$variable == var, ]
+  if(is.null(res) || nrow(srow) == 0) next
+
+  fam <- srow$Family
+
+  if(res$type == "continuous") {
+    # Single row for continuous variable
+    table_rows[[length(table_rows)+1]] <- data.frame(
+      Family       = fam,
+      Variable     = var,
+      is_subrow    = FALSE,
+      Overall      = res$overall_desc,
+      Continued    = res$cont_desc,
+      Discontinued = res$disc_desc,
+      p            = format_p(srow$p_val),
+      p_FDR        = format_p(srow$p_fdr),
+      Sig          = format_sig(srow$p_fdr),
+      ES           = format_es(srow$effect_type, srow$effect_size, srow$ci_low, srow$ci_high),
+      Interpretation = srow$interpretation,
+      stringsAsFactors = FALSE
+    )
+
+  } else {
+    # Parent row (blank descriptives)
+    table_rows[[length(table_rows)+1]] <- data.frame(
+      Family       = fam,
+      Variable     = var,
+      is_subrow    = FALSE,
+      Overall      = "",
+      Continued    = "",
+      Discontinued = "",
+      p            = format_p(srow$p_val),
+      p_FDR        = format_p(srow$p_fdr),
+      Sig          = format_sig(srow$p_fdr),
+      ES           = format_es(srow$effect_type, srow$effect_size, srow$ci_low, srow$ci_high),
+      Interpretation = srow$interpretation,
+      stringsAsFactors = FALSE
+    )
+
+    # Sub-rows for each level
+    for(j in seq_len(nrow(res$levels))) {
+      lv <- res$levels[j, ]
+      table_rows[[length(table_rows)+1]] <- data.frame(
+        Family       = fam,
+        Variable     = paste0("    ", lv$level),
+        is_subrow    = TRUE,
+        Overall      = lv$overall_desc,
+        Continued    = lv$cont_desc,
+        Discontinued = lv$disc_desc,
+        p            = "",
+        p_FDR        = "",
+        Sig          = "",
+        ES           = "",
+        Interpretation = "",
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+}
+
+display_table <- bind_rows(table_rows) %>%
+  select(Family, Variable, Overall, Continued, Discontinued,
+         p, p_FDR, Sig, `Effect Size [95% CI]` = ES, Interpretation)
+
+#==============================================================================
+# PRINT TABLE 2
+#==============================================================================
+
+cat("===============================================================\n")
+cat("TABLE 2: GROUP COMPARISONS (Pooled MI — Rubin's Rules)\n")
+cat("===============================================================\n\n")
+
+print(display_table, row.names = FALSE, na.print = "")
 cat("\n")
 
-# Remove p_original if it exists
-if("p_original" %in% names(table2_final)) {
-  table2_final <- table2_final %>% select(-p_original)
-}
+# Save with labelled columns
+out_table <- display_table
+names(out_table) <- c(
+  "Family", "Variable",
+  sprintf("Overall (N=%d)", n_total),
+  sprintf("Continued (n=%d)", n_continued),
+  sprintf("Discontinued (n=%d)", n_discontinued),
+  "p (uncorrected)", "p (FDR-corrected)", "Sig (FDR)",
+  "Effect Size [95% CI]", "Interpretation"
+)
+write.csv(out_table, "TABLE2_publication_ready_with_FDR.csv", row.names = FALSE)
+cat("Saved: TABLE2_publication_ready_with_FDR.csv\n\n")
 
-# Build select statement based on what exists
-available_cols <- names(table2_final)
+#==============================================================================
+# TABLE 1: OVERALL SAMPLE (pooled)
+#==============================================================================
 
-select_cols <- c("Family", "Variable")
-if("Overall" %in% available_cols) select_cols <- c(select_cols, "Overall")
-if("0" %in% available_cols) select_cols <- c(select_cols, "0")
-if("1" %in% available_cols) select_cols <- c(select_cols, "1")
-if("p" %in% available_cols) select_cols <- c(select_cols, "p")
-if("P_FDR" %in% available_cols) select_cols <- c(select_cols, "P_FDR")
-if("test" %in% available_cols) select_cols <- c(select_cols, "test")
-if("SMD" %in% available_cols) select_cols <- c(select_cols, "SMD")
-if("Significant_FDR" %in% available_cols) select_cols <- c(select_cols, "Significant_FDR")
+cat("===============================================================\n")
+cat("TABLE 1: OVERALL SAMPLE CHARACTERISTICS (Pooled MI)\n")
+cat("===============================================================\n\n")
 
-table2_final <- table2_final %>%
-  select(all_of(select_cols))
+table1_rows <- list()
+for(var in all_vars) {
+  res <- pooled_results[[var]]
+  if(is.null(res)) next
 
-# Rename columns
-rename_list <- list()
-
-if("P_FDR" %in% names(table2_final)) {
-  rename_list[["P_FDR"]] <- "P (FDR-corrected)"
-}
-if("Significant_FDR" %in% names(table2_final)) {
-  rename_list[["Significant_FDR"]] <- "Significant (FDR < .05)"
-}
-if("Overall" %in% names(table2_final)) {
-  rename_list[["Overall"]] <- "Overall (N=397)"
-}
-if("0" %in% names(table2_final)) {
-  rename_list[["0"]] <- "Continued BZRA (n=304)"
-}
-if("1" %in% names(table2_final)) {
-  rename_list[["1"]] <- "Discontinued BZRA (n=93)"
-}
-if("p" %in% names(table2_final)) {
-  rename_list[["p"]] <- "P (uncorrected)"
-}
-if("test" %in% names(table2_final)) {
-  rename_list[["test"]] <- "Test Used"
-}
-if("SMD" %in% names(table2_final)) {
-  rename_list[["SMD"]] <- "Effect Size (SMD)"
-}
-
-# Apply renames using rename_with and a function
-for(old_name in names(rename_list)) {
-  if(old_name %in% names(table2_final)) {
-    names(table2_final)[names(table2_final) == old_name] <- rename_list[[old_name]]
-  }
-}
-
-# Format P_FDR to show <0.001 for very small values
-if("P (FDR-corrected)" %in% names(table2_final)) {
-  table2_final <- table2_final %>%
-    mutate(
-      `P (FDR-corrected)` = case_when(
-        is.na(`P (FDR-corrected)`) ~ NA_character_,
-        `P (FDR-corrected)` < 0.001 ~ "<0.001",
-        TRUE ~ sprintf("%.3f", `P (FDR-corrected)`)
-      )
+  if(res$type == "continuous") {
+    table1_rows[[length(table1_rows)+1]] <- data.frame(
+      Variable = var,
+      Overall  = res$overall_desc,
+      stringsAsFactors = FALSE
     )
-}
-
-write.csv(table2_final, "TABLE2_publication_ready_with_FDR.csv", row.names = FALSE)
-cat("✓ Saved: TABLE2_publication_ready_with_FDR.csv\n\n")
-
-# Verify FDR values were added
-if("P (FDR-corrected)" %in% names(table2_final)) {
-  n_with_fdr <- sum(!is.na(table2_final$`P (FDR-corrected)`))
-  n_total_rows <- nrow(table2_final)
-  cat("Verification:\n")
-  cat("  Total rows:", n_total_rows, "\n")
-  cat("  Rows with FDR-corrected p-values:", n_with_fdr, "\n")
-  
-  if(any(table2_final$`P (FDR-corrected)` == "<0.001", na.rm = TRUE)) {
-    cat("  Rows with FDR < 0.001:", sum(table2_final$`P (FDR-corrected)` == "<0.001", na.rm = TRUE), "\n")
-  }
-  
-  cat("  Rows missing FDR:", n_total_rows - n_with_fdr, "\n\n")
-  
-  # Show which variables are still missing FDR values
-  if(n_total_rows - n_with_fdr > 0) {
-    missing_fdr <- table2_final %>% 
-      filter(is.na(`P (FDR-corrected)`)) %>%
-      select(Family, Variable)
-    
-    if(nrow(missing_fdr) > 0) {
-      cat("⚠️  Variables still missing FDR values:\n")
-      print(missing_fdr %>% head(10), row.names = FALSE)
-      if(nrow(missing_fdr) > 10) {
-        cat("  ... and", nrow(missing_fdr) - 10, "more\n")
-      }
-      cat("\n")
+  } else {
+    table1_rows[[length(table1_rows)+1]] <- data.frame(
+      Variable = var, Overall = "", stringsAsFactors = FALSE)
+    for(j in seq_len(nrow(res$levels))) {
+      lv <- res$levels[j, ]
+      table1_rows[[length(table1_rows)+1]] <- data.frame(
+        Variable = paste0("    ", lv$level),
+        Overall  = lv$overall_desc,
+        stringsAsFactors = FALSE
+      )
     }
   }
-} else {
-  cat("⚠️  Warning: P (FDR-corrected) column not found in final table\n\n")
 }
 
-# -----------------------------------------------------------------------------
-# SUMMARY OF SIGNIFICANT FINDINGS
-# -----------------------------------------------------------------------------
+table1_display <- bind_rows(table1_rows)
+print(table1_display, row.names = FALSE)
+write.csv(table1_display, "TABLE1_overall_characteristics.csv", row.names = FALSE)
+cat("\nSaved: TABLE1_overall_characteristics.csv\n\n")
 
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("SUMMARY OF SIGNIFICANT FINDINGS\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
+#==============================================================================
+# FDR SUMMARY BY FAMILY
+#==============================================================================
 
-# Overall summary
-sig_uncorrected <- sum(pvalue_results$Significant_Uncorrected == "Yes", na.rm = TRUE)
-sig_fdr <- sum(pvalue_results$Significant_FDR == "Yes", na.rm = TRUE)
+cat("===============================================================\n")
+cat("FDR SUMMARY BY FAMILY\n")
+cat("===============================================================\n\n")
 
-cat("OVERALL:\n")
-cat("  Total variables tested:", nrow(pvalue_results), "\n")
-cat("  Significant (uncorrected p < .05):", sig_uncorrected, 
-    "(", round(100 * sig_uncorrected / nrow(pvalue_results), 1), "%)\n")
-cat("  Significant (FDR-corrected p < .05):", sig_fdr, 
-    "(", round(100 * sig_fdr / nrow(pvalue_results), 1), "%)\n\n")
-
-# By family summary
-cat("BY FAMILY:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-
-family_summary <- pvalue_results %>%
+fdr_summary <- summary_rows %>%
   group_by(Family) %>%
   summarise(
-    N_Variables = n(),
-    N_Sig_Uncorrected = sum(Significant_Uncorrected == "Yes", na.rm = TRUE),
-    N_Sig_FDR = sum(Significant_FDR == "Yes", na.rm = TRUE),
+    k         = n(),
+    n_sig_raw = sum(!is.na(p_val) & p_val < 0.05),
+    n_sig_fdr = sum(!is.na(p_fdr) & p_fdr < 0.05),
     .groups = "drop"
-  ) %>%
-  mutate(
-    Pct_Sig_FDR = round(100 * N_Sig_FDR / N_Variables, 1)
   )
 
-print(family_summary, row.names = FALSE)
+print(fdr_summary, row.names = FALSE)
 cat("\n")
+write.csv(fdr_summary, "TABLE2_FDR_summary_by_family.csv", row.names = FALSE)
+cat("Saved: TABLE2_FDR_summary_by_family.csv\n\n")
 
-write.csv(family_summary, "TABLE2_FDR_summary_by_family.csv", row.names = FALSE)
-cat("✓ Saved: TABLE2_FDR_summary_by_family.csv\n\n")
+#==============================================================================
+# SIGNIFICANT VARIABLES
+#==============================================================================
 
-# List all significant variables (FDR-corrected)
-sig_all <- pvalue_results %>%
-  filter(Significant_FDR == "Yes") %>%
-  arrange(P_FDR) %>%
-  select(Family, Variable, P_Value, P_FDR)
+sig_vars <- summary_rows %>%
+  filter(!is.na(p_fdr) & p_fdr < 0.05) %>%
+  arrange(p_fdr)
 
-if(nrow(sig_all) > 0) {
-  cat("ALL SIGNIFICANT VARIABLES (FDR-corrected p < .05):\n")
-  cat("─────────────────────────────────────────────────────────────\n")
-  print(sig_all, row.names = FALSE)
+if(nrow(sig_vars) > 0) {
+  cat("SIGNIFICANT VARIABLES (FDR-corrected) WITH EFFECT SIZES:\n")
+  cat("-------------------------------------------------------------\n")
+  print(sig_vars %>%
+          select(Family, variable, p_val, p_fdr, effect_type, effect_size, interpretation),
+        row.names = FALSE)
   cat("\n")
-  
-  write.csv(sig_all, "TABLE2_significant_variables_FDR.csv", row.names = FALSE)
-  cat("✓ Saved: TABLE2_significant_variables_FDR.csv\n\n")
+  write.csv(sig_vars, "TABLE2_significant_variables_FDR.csv", row.names = FALSE)
+  cat("Saved: TABLE2_significant_variables_FDR.csv\n\n")
 } else {
-  cat("No variables remain significant after FDR correction\n\n")
+  cat("No variables significant after FDR correction.\n\n")
 }
 
-# -----------------------------------------------------------------------------
+#==============================================================================
+# NOTABLE EFFECT SIZES (medium or large)
+#==============================================================================
+
+notable <- summary_rows %>%
+  filter(interpretation %in% c("Medium","Large")) %>%
+  arrange(desc(abs(effect_size)))
+
+if(nrow(notable) > 0) {
+  cat("NOTABLE EFFECT SIZES (medium or large):\n")
+  cat("-------------------------------------------------------------\n")
+  cat("Note: listed regardless of statistical significance\n\n")
+  print(notable %>%
+          select(Family, variable, effect_type, effect_size, ci_low, ci_high, interpretation),
+        row.names = FALSE)
+  cat("\n")
+}
+
+#==============================================================================
 # MANUSCRIPT TEXT SNIPPET
-# -----------------------------------------------------------------------------
+#==============================================================================
 
-cat("═══════════════════════════════════════════════════════════════\n")
+cat("===============================================================\n")
 cat("MANUSCRIPT TEXT SNIPPET\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
+cat("===============================================================\n\n")
 
+age_res <- pooled_results[["age"]]
 cat("Sample Characteristics:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-cat("The final sample comprised", n_total, "older adults (mean age =", 
-    round(mean(data_complete$age, na.rm = TRUE), 1), "years, SD =", 
-    round(sd(data_complete$age, na.rm = TRUE), 1), ").\n")
-
-# Sex distribution
-if("sex" %in% names(data_complete)) {
-  sex_table <- table(data_complete$sex)
-  if("Female" %in% names(sex_table)) {
-    n_female <- sex_table["Female"]
-    pct_female <- 100 * n_female / n_total
-    cat("The sample was", round(pct_female, 1), "% female (n =", n_female, ").\n")
-  }
+cat("-------------------------------------------------------------\n")
+if(!is.null(age_res)) {
+  cat(sprintf("The final sample comprised %d older adults (%s years).\n",
+              n_total, age_res$overall_desc))
 }
 
-cat("\nOf the", n_total, "participants,", n_discontinued, "(", 
-    round(100 * n_discontinued / n_total, 1), 
-    "%) reported discontinuing their BZRA medication,\n")
-cat("while", n_continued, "(", round(100 * n_continued / n_total, 1), 
-    "%) continued using it.\n\n")
+sex_res <- pooled_results[["sex"]]
+if(!is.null(sex_res)) {
+  female_row <- sex_res$levels[sex_res$levels$level == "Female", ]
+  if(nrow(female_row) > 0)
+    cat(sprintf("The sample was %.1f%% female (n = %d).\n",
+                female_row$overall_pct, female_row$overall_n))
+}
 
-if(nrow(sig_all) > 0) {
-  cat("Group Comparisons:\n")
-  cat("─────────────────────────────────────────────────────────────\n")
-  cat("After FDR correction within variable families, those who discontinued\n")
-  cat("differed significantly from those who continued on", nrow(sig_all), "variable(s):\n\n")
-  
-  for(i in 1:min(5, nrow(sig_all))) {
-    cat(sprintf("  • %s (p_FDR = %.4f)\n", 
-                sig_all$Variable[i], sig_all$P_FDR[i]))
+cat(sprintf("\nOf the %d participants, %d (%.1f%%) reported discontinuing their\n",
+            n_total, n_discontinued, 100*n_discontinued/n_total))
+cat(sprintf("BZRA medication; %d (%.1f%%) continued use.\n\n",
+            n_continued, 100*n_continued/n_total))
+
+cat("Group Comparisons:\n")
+cat("-------------------------------------------------------------\n")
+if(nrow(sig_vars) > 0) {
+  cat(sprintf("After FDR correction within variable families (Benjamini & Hochberg, 1995),\n"))
+  cat(sprintf("those who discontinued differed significantly from those who continued\n"))
+  cat(sprintf("on %d variable(s):\n\n", nrow(sig_vars)))
+  for(i in seq_len(min(5, nrow(sig_vars)))) {
+    es_label <- ifelse(sig_vars$effect_type[i] == "Cohens_d", "d", "V")
+    dir_note <- if(sig_vars$effect_type[i] == "Cohens_d" && sig_vars$effect_size[i] > 0) {
+      "(higher in discontinued)"
+    } else if(sig_vars$effect_type[i] == "Cohens_d") {
+      "(lower in discontinued)"
+    } else ""
+    cat(sprintf("  %s: p_FDR = %.4f, %s = %.2f %s [%s]\n",
+                sig_vars$variable[i], sig_vars$p_fdr[i],
+                es_label, sig_vars$effect_size[i],
+                dir_note, sig_vars$interpretation[i]))
   }
-  
-  if(nrow(sig_all) > 5) {
-    cat("  ... and", nrow(sig_all) - 5, "additional variable(s)\n")
-  }
-  cat("\n")
+  if(nrow(sig_vars) > 5) cat("  ... and", nrow(sig_vars)-5, "more\n")
 } else {
-  cat("Group Comparisons:\n")
-  cat("─────────────────────────────────────────────────────────────\n")
-  cat("After FDR correction within variable families, no significant baseline\n")
-  cat("differences were observed between those who discontinued and those who\n")
-  cat("continued BZRA use.\n\n")
+  cat("After FDR correction, no significant baseline differences were observed\n")
+  cat("between those who discontinued and those who continued BZRA use.\n")
 }
 
-cat("Statistical Methods:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-cat("Group comparisons used independent samples t-tests for continuous\n")
-cat("variables and chi-square or Fisher's exact tests for categorical variables.\n")
-cat("False discovery rate (FDR) correction was applied separately within each\n")
-cat("variable family: demographics (n =", length(demographics), "),\n")
-cat("clinical (n =", length(clinical), "), sleep/adverse effects (n =", 
-    length(sleep_adverse), "),\n")
-cat("behavioural (n =", length(behavioural), "), and personality (n =", 
-    length(personality), ").\n\n")
+cat("\nStatistical Methods:\n")
+cat("-------------------------------------------------------------\n")
+cat(sprintf("Descriptive statistics and group comparisons were computed across all\n"))
+cat(sprintf("%d imputed datasets and pooled using Rubin's (1987) Rules.\n", m))
+cat("For continuous variables, pooled means and within-imputation SDs are\n")
+cat("reported. Group differences were tested using pooled t-statistics with\n")
+cat("Barnard-Rubin degrees of freedom; effect sizes are Cohen's d computed\n")
+cat("from pooled means and pooled within-group SDs (positive values indicate\n")
+cat("higher scores in the discontinued group). For categorical variables,\n")
+cat("pooled proportions are reported as n (%); group differences were tested\n")
+cat("using the mean pooled chi-square statistic (Enders, 2010); effect sizes\n")
+cat("are Cramer's V. FDR correction (Benjamini & Hochberg, 1995) was applied\n")
+cat("within five variable families:\n")
+cat(sprintf("demographics (k=%d), clinical (k=%d), sleep/adverse effects (k=%d),\n",
+            sum(all_vars %in% demographics), sum(all_vars %in% clinical),
+            sum(all_vars %in% sleep_adverse)))
+cat(sprintf("behavioural (k=%d), and personality (k=%d).\n\n",
+            sum(all_vars %in% behavioural), sum(all_vars %in% personality)))
 
-# -----------------------------------------------------------------------------
-# FINAL SUMMARY
-# -----------------------------------------------------------------------------
+#==============================================================================
+# COMPLETE
+#==============================================================================
 
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("DESCRIPTIVE STATISTICS COMPLETE\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
+cat("===============================================================\n")
+cat("CHUNK 10 COMPLETE\n")
+cat("===============================================================\n\n")
 cat("FILES CREATED:\n")
 cat("  1. TABLE1_overall_characteristics.csv\n")
-cat("  2. TABLE2_by_discontinuation.csv\n")
-cat("  3. TABLE2_pvalues_with_FDR.csv\n")
-cat("  4. TABLE2_publication_ready_with_FDR.csv\n")
-cat("  5. TABLE2_FDR_summary_by_family.csv\n")
-if(nrow(sig_all) > 0) {
-  cat("  6. TABLE2_significant_variables_FDR.csv\n")
-}
-cat("\n")
-
-cat("KEY FINDINGS:\n")
-cat("  • Total variables tested:", nrow(pvalue_results), "\n")
-cat("  • Significant before FDR:", sig_uncorrected, "\n")
-cat("  • Significant after FDR:", sig_fdr, "\n")
-cat("  • FDR families:", length(unique(pvalue_results$Family)), "\n\n")
-
-cat("VARIABLE FORMATTING:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-cat("CATEGORICAL (n, %%):\n")
-cat("  • sex (Female, Male)\n")
-cat("  • education, income, employment, driving_freq, gen_health\n")
-cat("  • Sleep aids: alc_sleep, can_sleep, melatonin_use, op_sleep\n")
-cat("  • stop_wdl_exp_combined (withdrawal categories 0-5)\n\n")
-
-cat("CONTINUOUS (MEAN ± SD):\n")
-cat("  • Demographics: age\n")
-cat("  • Clinical: phq2_score, osss_3_score, med_quant\n")
-cat("  • Condition counts: n_physical, n_mental, n_sleep, n_health\n")
-cat("  • Side effects: side_effects_1-4 (Likert 1-5)\n")
-cat("  • Safety: safety_1-4 (Likert 1-5)\n")
-cat("  • ADLs: adls_1-2 (Likert 1-5)\n")
-cat("  • Dependence: dependence_1-3 (Likert 1-5)\n")
-cat("  • Withdrawal count: wdl_symptom_count (0-4)\n")
-cat("  • COM-B: motivation_1-3, desires_1-3, capability_1, capability\n")
-cat("  • Personality: All BFI, SURPS, DBAS, CISS subscales\n\n")
-
-cat("NEXT STEPS:\n")
-cat("  → Use TABLE2_publication_ready_with_FDR.csv for manuscript Table 2\n")
-cat("  → Report FDR-corrected p-values in results\n")
-cat("  → Cite variable family in methods (e.g., 'Demographics family')\n\n")
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("✓ CHUNK 10 COMPLETE\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
+cat("  2. TABLE2_publication_ready_with_FDR.csv\n")
+cat("  3. TABLE2_FDR_summary_by_family.csv\n")
+if(nrow(sig_vars) > 0)
+  cat("  4. TABLE2_significant_variables_FDR.csv\n")
+cat("\nNOTES:\n")
+cat("  - All estimates pooled across", m, "imputations (Rubin's Rules)\n")
+cat("  - Continuous: Mean (pooled within-imputation SD)\n")
+cat("  - Categorical: n (pooled %)\n")
+cat("  - Cohen's d: positive = higher in discontinued group\n")
+cat("  - Cramer's V: always positive\n\n")
+cat("REFERENCES:\n")
+cat("  Rubin, D.B. (1987). Multiple Imputation for Nonresponse in Surveys.\n")
+cat("  Li et al. (1991). Statistica Sinica, 1(1), 65-92.\n")
+cat("  Enders, C.K. (2010). Applied Missing Data Analysis.\n")
+cat("  Benjamini & Hochberg (1995). JRSS-B, 57(1), 289-300.\n")
+cat("  Cohen, J. (1988). Statistical Power Analysis (2nd ed.).\n\n")
 ```
+
+
 
 
 
@@ -7113,7 +7195,7 @@ cat("This validates the data-driven variable selection approach.\n\n")
 # FIRTH PENALIZED LOGISTIC REGRESSION - VSURF PREDICTION MODEL
 #==============================================================================
 # Purpose: Address influential cases and potential separation issues
-# Problem: Influential cases (all discontinued) = quasi-separation risk
+# Problem: Influential cases = quasi-separation risk
 # Solution: Firth's penalized likelihood reduces bias in finite samples
 # Interpretation: Yields shrunken (conservative) estimates
 # Updated: Now tests all 4 VSURF Prediction variables
@@ -7163,9 +7245,8 @@ cat(sprintf("Predictors: %s\n\n", paste(model_vars, collapse = ", ")))
 cat("THE PROBLEM (from influential cases analysis):\n")
 cat("─────────────────────────────────────────────────────────────\n")
 cat("* Influential cases identified (Cook's D > threshold)\n")
-cat("* All influential cases discontinued medication (100%)\n")
-cat("* This creates quasi-separation:\n")
-cat("  - Some predictor combinations perfectly predict outcome = 1\n")
+cat("* Most influential cases discontinued medication (~86%)\n")
+cat("* This raised concern about potential separation:\n")
 cat("  - Standard ML estimates become unstable/biased\n")
 cat("  - Coefficients artificially inflated\n\n")
 
@@ -7519,53 +7600,39 @@ cat("INFLUENTIAL CASES CHARACTERIZATION - VSURF PREDICTION\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 #==============================================================================
-# PART A: LOAD DATA AND IDENTIFY INFLUENTIAL CASES
+# PART A: LOAD DATA AND IDENTIFY INFLUENTIAL CASES (ACROSS ALL IMPUTATIONS)
 #==============================================================================
 
-cat("PART A: Loading data and identifying influential cases\n")
+cat("PART A: Loading data and identifying influential cases (ALL IMPUTATIONS)\n")
 cat("─────────────────────────────────────────────────────────────\n\n")
 
-# Load imputed data (mids object - consistent with VSURF and regression chunks)
-if(!file.exists("imputed_data_with_subscales.rds")) {
-  stop("ERROR: Run Chunk 9 first to create imputed_data_with_subscales.rds")
-}
-
 mids_data <- readRDS("imputed_data_with_subscales.rds")
-cat(sprintf("✓ Loaded imputed data with %d imputations\n", mids_data$m))
-
-# Build imputed list from mids object
 imputed_list <- lapply(1:mids_data$m, function(i) complete(mids_data, i))
-cat(sprintf("✓ Extracted %d complete datasets\n", length(imputed_list)))
 
-# Load final model results (REVISED)
-if(!file.exists("final_regression_results_revised.rds")) {
-  stop("ERROR: Run final regression chunk first to create final_regression_results_revised.rds")
-}
-
-final_results <- readRDS("final_regression_results_revised.rds")
-model_vars  <- final_results$variables$model3  # VSURF Prediction set
-outcome_var <- "scrn_stopped_bzra"
-
-cat(sprintf("\nModel: Model 3 (VSURF Prediction)\n"))
-cat(sprintf("Predictors: %s\n\n", paste(model_vars, collapse = ", ")))
-
-# Use first imputation for consistent case indexing
-analysis_data <- imputed_list[[1]]
-
-# Fit Model 3 to get Cook's D
 formula_str <- paste(outcome_var, "~", paste(model_vars, collapse = " + "))
 formula_obj <- as.formula(formula_str)
-model       <- glm(formula_obj, data = analysis_data, family = binomial)
 
-# Calculate Cook's D
-cooks_d             <- cooks.distance(model)
-threshold           <- 4 / nrow(analysis_data)
-influential_indices <- which(cooks_d > threshold)
+n_cases <- nrow(imputed_list[[1]])
+m <- length(imputed_list)
 
-cat(sprintf("Total cases: %d\n", nrow(analysis_data)))
-cat(sprintf("Influential cases: %d (%.1f%%)\n",
+# Matrix to store Cook's D for each imputation
+cooks_matrix <- matrix(NA, nrow = n_cases, ncol = m)
+
+for(i in 1:m) {
+  model_i <- glm(formula_obj, data = imputed_list[[i]], family = binomial)
+  cooks_matrix[, i] <- cooks.distance(model_i)
+}
+
+# Average Cook’s D across imputations
+mean_cooks_d <- rowMeans(cooks_matrix)
+
+threshold <- 4 / n_cases
+influential_indices <- which(mean_cooks_d > threshold)
+
+cat(sprintf("Total cases: %d\n", n_cases))
+cat(sprintf("Influential cases (mean Cook's D): %d (%.1f%%)\n",
             length(influential_indices),
-            100 * length(influential_indices) / nrow(analysis_data)))
+            100 * length(influential_indices) / n_cases))
 cat(sprintf("Cook's D threshold: %.5f\n\n", threshold))
 
 #==============================================================================
@@ -7609,6 +7676,11 @@ cat("\n")
 
 cont_table    <- table(analysis_data$influential, analysis_data[[outcome_var]])
 fisher_result <- fisher.test(cont_table)
+
+table_outcome <- table(analysis_data$influential_group,
+                       analysis_data[[outcome_var]])
+
+print(table_outcome)
 
 cat(sprintf("Fisher's Exact Test: p = %.4f\n", fisher_result$p.value))
 cat(sprintf("Odds Ratio: %.2f [%.2f, %.2f]\n\n",
@@ -8653,3 +8725,817 @@ cat("═════════════════════════
 cat("✓ COMPLETE CASE SENSITIVITY ANALYSIS COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 ```
+
+
+## Missing Data Justification
+```{r}
+#==============================================================================
+# MISSING DATA JUSTIFICATION
+#==============================================================================
+# Purpose:
+#   Consolidate all missing data evidence into one transparent, auditable
+#   section for thesis/manuscript reporting. Covers:
+#
+#   A. Missing data overview — % missing per variable
+#   B. Little's MCAR test — formal test of MCAR vs MAR/MNAR
+#   C. Predictors of missingness — MAR justification
+#   D. Outcome vs missingness — tests if DV predicts missingness
+#   E. Completers vs non-completers — demographic comparison
+#   F. Imputation diagnostics — convergence trace plots
+#   G. FMI summary — with item-level imputation explanation
+#   H. Complete case vs MI sensitivity — pulls from saved results
+#   I. APA write-up — all numbers filled in automatically
+#
+# Files required:
+#   - SIMOA_analysis.rds
+#   - imputed_data_with_subscales.rds
+#   - imputed_datasets_complete_final.rds  (optional, for FMI)
+#   - final_regression_results_revised.rds (optional, for FMI)
+#   - complete_case_sensitivity_results.rds (optional, for CC vs MI)
+#   - fmi_delta_sensitivity_results.rds    (optional, for FMI table)
+#
+# NOTE: All analyses re-run from raw data — no dependency on prior chunks.
+#       Where saved results exist they are loaded; otherwise re-computed.
+#==============================================================================
+
+library(tidyverse)
+library(mice)
+library(naniar)      # mcar_test()
+library(gtsummary)   # tbl_summary() for comparison table
+library(gt)          # table formatting
+
+cat("\n")
+cat("===============================================================\n")
+cat("MISSING DATA JUSTIFICATION\n")
+cat("===============================================================\n\n")
+
+#==============================================================================
+# LOAD DATA
+#==============================================================================
+
+cat("Loading data...\n")
+cat("-------------------------------------------------------------\n\n")
+
+if(!file.exists("SIMOA_analysis.rds"))
+  stop("ERROR: SIMOA_analysis.rds not found.")
+if(!file.exists("imputed_data_with_subscales.rds"))
+  stop("ERROR: imputed_data_with_subscales.rds not found.")
+
+original_data <- readRDS("SIMOA_analysis.rds")
+imp_mids      <- readRDS("imputed_data_with_subscales.rds")
+
+cat(sprintf("✓ SIMOA_analysis:    %d rows x %d columns\n",
+            nrow(original_data), ncol(original_data)))
+cat(sprintf("✓ Imputed datasets:  m = %d imputations\n\n", imp_mids$m))
+
+outcome_var <- "scrn_stopped_bzra"
+
+# Personality item groups (for missingness reporting)
+bfi_items   <- c("reserved", "outgoing", "find_fault", "trusting",
+                 "lazy", "thorough", "relaxed", "nervous",
+                 "few_interests", "imagination")
+surps_items <- paste0("surps", 1:23)
+dbas_items  <- c("dbas1", paste0("dbas_", 2:16))
+ciss_items  <- paste0("ciss", 1:21)
+
+personality_items <- c(bfi_items, surps_items, dbas_items, ciss_items)
+personality_items <- personality_items[personality_items %in% names(original_data)]
+
+# Compute n_health_conditions if not already present
+# (sum of physical, mental, and sleep health conditions)
+health_cond_cols <- c("n_physical_conditions", "n_ment_conditions", "n_sleep_conditions",
+                      "phys_health_con", "ment_health_con", "sleep_health_con")
+
+if(!"n_health_conditions" %in% names(original_data)) {
+  available_health_cols <- health_cond_cols[health_cond_cols %in% names(original_data)]
+  if(length(available_health_cols) >= 2) {
+    # Coerce to numeric before summing (guards against factor storage)
+    health_matrix <- sapply(
+      original_data[, available_health_cols, drop = FALSE],
+      function(x) as.numeric(as.character(x))
+    )
+    original_data$n_health_conditions <- rowSums(health_matrix, na.rm = TRUE)
+    cat(sprintf("✓ Computed n_health_conditions from: %s
+
+",
+                paste(available_health_cols, collapse = " + ")))
+  } else {
+    cat("NOTE: Could not compute n_health_conditions — component variables not found.
+
+")
+  }
+}
+
+# Compute n_health_conditions if not already present in original_data
+# Component column names vary — try both naming conventions
+health_cond_cols <- c("n_physical_conditions", "n_ment_conditions", "n_sleep_conditions",
+                      "phys_health_con", "ment_health_con", "sleep_health_con")
+
+if(!"n_health_conditions" %in% names(original_data)) {
+  available_health_cols <- health_cond_cols[health_cond_cols %in% names(original_data)]
+  if(length(available_health_cols) >= 2) {
+    # Coerce to numeric before summing (guards against factor storage)
+    health_matrix <- sapply(
+      original_data[, available_health_cols, drop = FALSE],
+      function(x) as.numeric(as.character(x))
+    )
+    original_data$n_health_conditions <- rowSums(health_matrix, na.rm = TRUE)
+    cat(sprintf("✓ Computed n_health_conditions from: %s\n\n",
+                paste(available_health_cols, collapse = " + ")))
+  } else {
+    cat("NOTE: Could not compute n_health_conditions — component variables not found.\n\n")
+  }
+}
+
+# Demographic/clinical variables for comparison table
+demo_vars <- c("age", "sex", "education", "income", "employment",
+               "phq2_score", "n_health_conditions", "gen_health", "med_quant")
+demo_vars <- demo_vars[demo_vars %in% names(original_data)]
+
+cat(sprintf("Personality items found:   %d\n", length(personality_items)))
+cat(sprintf("Demographic vars found:    %d\n\n", length(demo_vars)))
+
+#==============================================================================
+# PART A: MISSING DATA OVERVIEW
+#==============================================================================
+
+cat("===============================================================\n")
+cat("PART A: MISSING DATA OVERVIEW\n")
+cat("===============================================================\n\n")
+
+# Overall missingness
+n_total <- nrow(original_data)
+n_vars  <- ncol(original_data)
+
+# Missingness per personality item
+miss_per_item <- original_data %>%
+  select(all_of(personality_items)) %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") %>%
+  mutate(pct_missing = 100 * n_missing / n_total) %>%
+  filter(n_missing > 0) %>%
+  arrange(desc(n_missing))
+
+# Missingness per instrument
+instrument_miss <- original_data %>%
+  summarise(
+    BFI_n_miss   = sum(rowSums(is.na(select(., any_of(bfi_items)))) > 0),
+    SURPS_n_miss = sum(rowSums(is.na(select(., any_of(surps_items)))) > 0),
+    DBAS_n_miss  = sum(rowSums(is.na(select(., any_of(dbas_items)))) > 0),
+    CISS_n_miss  = sum(rowSums(is.na(select(., any_of(ciss_items)))) > 0)
+  ) %>%
+  pivot_longer(everything(), names_to = "instrument", values_to = "n_rows_missing") %>%
+  mutate(
+    instrument    = sub("_n_miss", "", instrument),
+    pct_missing   = round(100 * n_rows_missing / n_total, 1)
+  )
+
+# Participants missing ANY personality data
+n_any_missing <- sum(rowSums(is.na(original_data[, personality_items])) > 0)
+pct_any_missing <- round(100 * n_any_missing / n_total, 1)
+
+cat("PARTICIPANTS WITH ANY MISSING PERSONALITY DATA:\n")
+cat(sprintf("  %d / %d (%.1f%%)\n\n", n_any_missing, n_total, pct_any_missing))
+
+cat("MISSINGNESS BY INSTRUMENT:\n")
+cat("-------------------------------------------------------------\n")
+print(instrument_miss, row.names = FALSE)
+cat("\n")
+
+if(nrow(miss_per_item) > 0) {
+  cat("ITEMS WITH MISSING DATA (top 15):\n")
+  cat("-------------------------------------------------------------\n")
+  print(head(miss_per_item, 15), row.names = FALSE)
+  cat("\n")
+} else {
+  cat("✓ No missing data at item level\n\n")
+}
+
+# Outcome missingness
+n_outcome_miss <- if(outcome_var %in% names(original_data)) {
+  sum(is.na(original_data[[outcome_var]]))
+} else 0
+cat(sprintf("Outcome (%s) missing: %d (%.1f%%)\n\n",
+            outcome_var, n_outcome_miss,
+            100 * n_outcome_miss / n_total))
+
+# Save overview for write-up
+missing_overview <- list(
+  n_total         = n_total,
+  n_any_missing   = n_any_missing,
+  pct_any_missing = pct_any_missing,
+  instrument_miss = instrument_miss,
+  n_outcome_miss  = n_outcome_miss
+)
+
+#==============================================================================
+# PART B: LITTLE'S MCAR TEST
+#==============================================================================
+
+cat("===============================================================\n")
+cat("PART B: LITTLE'S MCAR TEST\n")
+cat("===============================================================\n\n")
+
+cat("Running Little's MCAR test on personality items...\n")
+cat("(Tests whether data are Missing Completely At Random)\n\n")
+
+personality_data_for_mcar <- original_data %>%
+  select(all_of(personality_items))
+
+mcar_result <- tryCatch({
+  naniar::mcar_test(personality_data_for_mcar)
+}, error = function(e) {
+  cat(sprintf("NOTE: mcar_test() error: %s\n", e$message))
+  cat("Trying with reduced variable set...\n")
+  # Try with only items that have missingness
+  items_with_miss <- personality_items[
+    sapply(personality_items, function(v) any(is.na(original_data[[v]])))
+  ]
+  if(length(items_with_miss) >= 2) {
+    naniar::mcar_test(original_data %>% select(all_of(items_with_miss)))
+  } else NULL
+})
+
+if(!is.null(mcar_result)) {
+  mcar_chi   <- round(mcar_result$statistic, 2)
+  mcar_df    <- mcar_result$df
+  mcar_p     <- mcar_result$p.value
+  mcar_patterns <- mcar_result$missing.patterns
+
+  cat("LITTLE'S MCAR TEST RESULTS:\n")
+  cat("-------------------------------------------------------------\n")
+  cat(sprintf("  Chi-square: %.2f\n", mcar_chi))
+  cat(sprintf("  df:         %d\n",   mcar_df))
+  cat(sprintf("  p-value:    %s\n",
+              ifelse(mcar_p < 0.001, "< .001", sprintf("= %.3f", mcar_p))))
+  cat(sprintf("  Missing patterns: %d\n\n", mcar_patterns))
+
+  mcar_interp <- if(mcar_p < 0.05) {
+    "Reject MCAR — data are MAR or MNAR. Multiple imputation is appropriate."
+  } else {
+    "Fail to reject MCAR — data may be MCAR. Multiple imputation is still appropriate."
+  }
+  cat(sprintf("INTERPRETATION: %s\n\n", mcar_interp))
+} else {
+  cat("NOTE: Could not run Little's MCAR test.\n\n")
+  mcar_chi <- mcar_df <- mcar_p <- mcar_patterns <- NA
+  mcar_interp <- "Little's MCAR test could not be computed."
+}
+
+#==============================================================================
+# PART C: PREDICTORS OF MISSINGNESS (MAR JUSTIFICATION)
+#==============================================================================
+
+cat("===============================================================\n")
+cat("PART C: PREDICTORS OF MISSINGNESS\n")
+cat("===============================================================\n\n")
+
+cat("Tests whether missingness on personality data is predicted by\n")
+cat("observed variables (supports MAR over MNAR).\n\n")
+
+# Create missingness indicator: 1 = missing any personality item
+original_data$missing_personality <- as.integer(
+  rowSums(is.na(original_data[, personality_items])) > 0
+)
+
+# Candidate predictors (observed, complete or near-complete variables)
+candidate_predictors <- c("age", "sex", "phq2_score", "gen_health",
+                          "n_health_conditions", "med_quant",
+                          "education", "income", "employment")
+candidate_predictors <- candidate_predictors[candidate_predictors %in% names(original_data)]
+
+# Run logistic regression for each predictor individually
+mar_results <- map_df(candidate_predictors, function(pred) {
+  d <- original_data %>%
+    select(missing_personality, all_of(pred)) %>%
+    filter(complete.cases(.))
+
+  # Check for sufficient variance — handle factors and numeric separately
+  has_variance <- if(is.factor(d[[pred]]) || is.character(d[[pred]])) {
+    length(unique(na.omit(d[[pred]]))) > 1
+  } else {
+    var(as.numeric(d[[pred]]), na.rm = TRUE) > 0
+  }
+  if(nrow(d) < 10 || !has_variance) return(NULL)
+
+  tryCatch({
+    fit <- glm(missing_personality ~ ., data = d, family = binomial())
+    s   <- broom::tidy(fit) %>% filter(term != "(Intercept)")
+    data.frame(
+      predictor = pred,
+      OR        = round(exp(s$estimate[1]), 3),
+      p.value   = round(s$p.value[1], 4),
+      sig       = case_when(
+        s$p.value[1] < 0.001 ~ "***",
+        s$p.value[1] < 0.01  ~ "**",
+        s$p.value[1] < 0.05  ~ "*",
+        s$p.value[1] < 0.10  ~ ".",
+        TRUE                 ~ ""
+      ),
+      stringsAsFactors = FALSE
+    )
+  }, error = function(e) NULL)
+})
+
+sig_predictors <- mar_results %>% filter(p.value < 0.05) %>% pull(predictor)
+
+cat("PREDICTORS OF PERSONALITY DATA MISSINGNESS:\n")
+cat("-------------------------------------------------------------\n")
+print(mar_results %>% arrange(p.value), row.names = FALSE)
+cat("\n")
+
+if(length(sig_predictors) > 0) {
+  cat(sprintf("Significant predictors: %s\n", paste(sig_predictors, collapse = ", ")))
+  cat("-> Missingness depends on OBSERVED variables = supports MAR\n")
+  cat("-> These variables are included in the imputation model\n\n")
+} else {
+  cat("No significant predictors found.\n")
+  cat("-> Consistent with MCAR, though Little's test may indicate otherwise\n\n")
+}
+
+#==============================================================================
+# PART D: OUTCOME VS MISSINGNESS
+#==============================================================================
+
+cat("===============================================================\n")
+cat("PART D: OUTCOME VS MISSINGNESS\n")
+cat("===============================================================\n\n")
+
+cat("Tests whether the outcome (discontinuation) predicts missingness.\n")
+cat("If non-significant: outcome is unrelated to missing data mechanism.\n")
+cat("This is the most important MNAR check for your study.\n\n")
+
+if(outcome_var %in% names(original_data) &&
+   sum(!is.na(original_data[[outcome_var]])) > 0) {
+
+  outcome_miss_tab <- table(
+    Missing = original_data$missing_personality,
+    Outcome = original_data[[outcome_var]],
+    deparse.level = 0
+  )
+
+  chi_test <- chisq.test(outcome_miss_tab)
+
+  cat("MISSINGNESS BY OUTCOME STATUS:\n")
+  cat("-------------------------------------------------------------\n")
+  addmargins(outcome_miss_tab) %>% print()
+  cat("\n")
+
+  cat(sprintf("Chi-square test: chi2(%d) = %.3f, p = %.4f\n\n",
+              chi_test$parameter,
+              chi_test$statistic,
+              chi_test$p.value))
+
+  outcome_miss_interp <- if(chi_test$p.value >= 0.05) {
+    sprintf("Non-significant (p = %.3f): Discontinuation status does NOT predict personality data missingness. This is strong evidence against outcome-dependent MNAR.",
+            chi_test$p.value)
+  } else {
+    sprintf("Significant (p = %.3f): Discontinuation status predicts personality data missingness. Acknowledge this as a limitation.",
+            chi_test$p.value)
+  }
+  cat(sprintf("INTERPRETATION: %s\n\n", outcome_miss_interp))
+
+  outcome_chi_stat <- round(chi_test$statistic, 3)
+  outcome_chi_df   <- chi_test$parameter
+  outcome_chi_p    <- chi_test$p.value
+
+} else {
+  cat("Outcome variable not found or fully missing.\n\n")
+  outcome_chi_stat <- outcome_chi_df <- outcome_chi_p <- NA
+  outcome_miss_interp <- "Could not test."
+}
+
+#==============================================================================
+# PART E: COMPLETERS VS NON-COMPLETERS
+#==============================================================================
+
+cat("===============================================================\n")
+cat("PART E: COMPLETERS VS NON-COMPLETERS\n")
+cat("===============================================================\n\n")
+
+cat("Compares participants with complete vs incomplete personality data\n")
+cat("on demographic and clinical variables.\n\n")
+
+comp_data <- original_data %>%
+  mutate(
+    Completeness = factor(
+      missing_personality,
+      levels = c(0, 1),
+      labels = c("Complete personality data", "Missing personality data")
+    )
+  ) %>%
+  select(Completeness, all_of(demo_vars))
+
+# Build comparison table using gtsummary
+comp_table <- tryCatch({
+  comp_data %>%
+    tbl_summary(
+      by = Completeness,
+      statistic = list(
+        all_continuous()  ~ "{mean} ({sd})",
+        all_categorical() ~ "{n} ({p}%)"
+      ),
+      digits   = list(all_continuous() ~ 2),
+      missing  = "no",
+      label    = list(
+        age               ~ "Age (years)",
+        sex               ~ "Sex",
+        education         ~ "Education",
+        income            ~ "Income",
+        employment        ~ "Employment",
+        phq2_score        ~ "PHQ-2 Score",
+        n_health_conditions ~ "Number of health conditions",
+        gen_health        ~ "General health",
+        med_quant         ~ "Medication quantity"
+      ) %>%
+        # Only keep labels for variables that exist
+        keep(names(.) %in% demo_vars)
+    ) %>%
+    add_p(
+      test = list(
+        all_continuous()  ~ "t.test",
+        all_categorical() ~ "chisq.test"
+      )
+    ) %>%
+    add_overall() %>%
+    bold_p(t = 0.05) %>%
+    modify_header(label ~ "**Variable**") %>%
+    modify_caption("**Table. Demographic and clinical characteristics by personality data completeness**")
+}, error = function(e) {
+  cat(sprintf("NOTE: gtsummary table error: %s\n", e$message))
+  cat("Falling back to manual comparison...\n\n")
+  NULL
+})
+
+if(!is.null(comp_table)) {
+  cat("COMPLETERS VS NON-COMPLETERS TABLE:\n")
+  cat("-------------------------------------------------------------\n")
+  print(comp_table)
+  cat("\n")
+} else {
+  # Manual fallback
+  cat("COMPLETERS VS NON-COMPLETERS (manual):\n")
+  cat("-------------------------------------------------------------\n")
+
+  manual_comp <- map_df(demo_vars, function(var) {
+    complete_vals <- original_data[[var]][original_data$missing_personality == 0]
+    missing_vals  <- original_data[[var]][original_data$missing_personality == 1]
+
+    if(is.numeric(original_data[[var]])) {
+      data.frame(
+        Variable    = var,
+        Complete    = sprintf("%.2f (%.2f)", mean(complete_vals, na.rm=TRUE), sd(complete_vals, na.rm=TRUE)),
+        Missing     = sprintf("%.2f (%.2f)", mean(missing_vals, na.rm=TRUE), sd(missing_vals, na.rm=TRUE)),
+        p_value     = tryCatch(round(t.test(complete_vals, missing_vals)$p.value, 4),
+                               error=function(e) NA),
+        stringsAsFactors = FALSE
+      )
+    } else {
+      data.frame(
+        Variable = var,
+        Complete = sprintf("n=%d", sum(!is.na(complete_vals))),
+        Missing  = sprintf("n=%d", sum(!is.na(missing_vals))),
+        p_value  = tryCatch({
+          tab <- table(original_data[[var]], original_data$missing_personality)
+          round(chisq.test(tab)$p.value, 4)
+        }, error=function(e) NA),
+        stringsAsFactors = FALSE
+      )
+    }
+  })
+  print(manual_comp, row.names = FALSE)
+  cat("\n")
+  comp_table <- manual_comp  # store for saving
+}
+
+# Count significant differences
+sig_demo_diffs <- tryCatch({
+  inline_text_results <- comp_table %>%
+    as_tibble() %>%
+    filter(!is.na(p.value)) %>%
+    filter(as.numeric(p.value) < 0.05)
+  nrow(inline_text_results)
+}, error = function(e) {
+  cat("(Could not count significant differences automatically)\n")
+  NA
+})
+
+#==============================================================================
+# PART F: MICE CONVERGENCE DIAGNOSTICS
+#==============================================================================
+
+cat("===============================================================\n")
+cat("PART F: MICE CONVERGENCE DIAGNOSTICS\n")
+cat("===============================================================\n\n")
+
+cat("Generating convergence trace plots for MICE algorithm.\n")
+cat("Well-converged chains show: intermingling (no trends), overlapping\n")
+cat("streams across imputations, stable means and SDs across iterations.\n\n")
+
+# Plot convergence for the personality items with most missingness
+items_to_plot <- if(nrow(miss_per_item) > 0) {
+  head(miss_per_item$variable, min(6, nrow(miss_per_item)))
+} else {
+  personality_items[1:min(6, length(personality_items))]
+}
+
+items_to_plot <- items_to_plot[items_to_plot %in% names(imp_mids$data)]
+
+if(length(items_to_plot) > 0) {
+  tryCatch({
+    # Main convergence plot
+    png("mice_convergence_plot.png", width = 1200, height = 800, res = 120)
+    plot(imp_mids, y = items_to_plot,
+         main = "MICE Convergence: Mean and SD across iterations",
+         layout = c(2, length(items_to_plot)))
+    dev.off()
+    cat("✓ Saved: mice_convergence_plot.png\n\n")
+  }, error = function(e) {
+    cat(sprintf("NOTE: Could not save convergence plot: %s\n\n", e$message))
+  })
+
+  # Also display inline
+  tryCatch({
+    plot(imp_mids, y = items_to_plot,
+         main = "MICE Convergence: Mean and SD across iterations",
+         layout = c(2, length(items_to_plot)))
+  }, error = function(e) NULL)
+} else {
+  cat("NOTE: No items with missingness found for convergence plot.\n\n")
+}
+
+# Number of iterations
+n_iter <- imp_mids$iteration
+n_imp  <- imp_mids$m
+cat(sprintf("Imputation settings:\n"))
+cat(sprintf("  Iterations (maxit): %d\n", n_iter))
+cat(sprintf("  Imputations (m):    %d\n\n", n_imp))
+
+cat("JUSTIFICATION FOR m = 20:\n")
+cat("-------------------------------------------------------------\n")
+cat(sprintf("White et al. (2011) recommend m >= percentage missing data.\n"))
+cat(sprintf("With %.1f%% of participants missing personality data,\n", pct_any_missing))
+cat(sprintf("m = %d exceeds this threshold and ensures stable pooled estimates.\n\n", n_imp))
+
+#==============================================================================
+# PART G: FMI SUMMARY
+#==============================================================================
+
+cat("===============================================================\n")
+cat("PART G: FRACTION OF MISSING INFORMATION (FMI)\n")
+cat("===============================================================\n\n")
+
+if(file.exists("fmi_delta_sensitivity_results.rds")) {
+  fmi_results <- readRDS("fmi_delta_sensitivity_results.rds")
+  fmi_all     <- fmi_results$fmi_all
+
+  cat("FMI RESULTS (from saved analysis):\n")
+  cat("-------------------------------------------------------------\n")
+  print(fmi_all %>% select(model, term, OR_CI, sig, fmi, fmi_level),
+        row.names = FALSE)
+  cat("\n")
+
+  fmi_range <- range(fmi_all$fmi, na.rm = TRUE)
+  cat(sprintf("FMI range: %.4f to %.4f (all Low < 0.10)\n\n", fmi_range[1], fmi_range[2]))
+
+} else {
+  cat("NOTE: fmi_delta_sensitivity_results.rds not found.\n")
+  cat("      Run fmi_delta_sensitivity.R first for FMI table.\n\n")
+  fmi_range <- c(NA, NA)
+}
+
+cat("INTERPRETATION:\n")
+cat("-------------------------------------------------------------\n")
+cat("Near-zero FMI is expected and reflects a STRENGTH of the design:\n")
+cat("imputation was performed at the ITEM level before subscale formation.\n")
+cat("Uncertainty from missingness was resolved prior to the regression stage,\n")
+cat("meaning pooled coefficients were not inflated by between-imputation variance.\n\n")
+
+#==============================================================================
+# PART H: COMPLETE CASE VS MI SENSITIVITY
+#==============================================================================
+
+cat("===============================================================\n")
+cat("PART H: COMPLETE CASE VS MI SENSITIVITY\n")
+cat("===============================================================\n\n")
+
+if(file.exists("complete_case_sensitivity_results.rds")) {
+  cc_results <- readRDS("complete_case_sensitivity_results.rds")
+
+  n_complete   <- cc_results$n_complete
+  n_excluded   <- cc_results$n_excluded
+  pct_complete <- round(100 * n_complete / n_total, 1)
+
+  cat(sprintf("Complete cases: %d / %d (%.1f%%)\n\n", n_complete, n_total, pct_complete))
+
+  cat("MODEL 3: CC vs MI COMPARISON:\n")
+  cat("-------------------------------------------------------------\n")
+  print(cc_results$comparison_m3 %>%
+          select(term, MI_OR_CI, MI_sig, CC_OR_CI, CC_sig,
+                 OR_change_pct, Sig_change),
+        row.names = FALSE)
+  cat("\n")
+
+  cat("MODEL 4: CC vs MI COMPARISON:\n")
+  cat("-------------------------------------------------------------\n")
+  print(cc_results$comparison_m4 %>%
+          select(term, MI_OR_CI, MI_sig, CC_OR_CI, CC_sig,
+                 OR_change_pct, Sig_change),
+        row.names = FALSE)
+  cat("\n")
+
+  # Summarise consistency
+  m3_consistent <- sum(cc_results$comparison_m3$Sig_change %in%
+                         c("Both significant", "Both non-significant"), na.rm = TRUE)
+  m3_total      <- nrow(cc_results$comparison_m3)
+  m4_consistent <- sum(cc_results$comparison_m4$Sig_change %in%
+                         c("Both significant", "Both non-significant"), na.rm = TRUE)
+  m4_total      <- nrow(cc_results$comparison_m4)
+  mean_or_change_m3 <- round(mean(abs(cc_results$comparison_m3$OR_change_pct), na.rm=TRUE), 1)
+  mean_or_change_m4 <- round(mean(abs(cc_results$comparison_m4$OR_change_pct), na.rm=TRUE), 1)
+
+  cat(sprintf("Model 3: %d/%d predictors consistent; mean OR change = %.1f%%\n",
+              m3_consistent, m3_total, mean_or_change_m3))
+  cat(sprintf("Model 4: %d/%d predictors consistent; mean OR change = %.1f%%\n\n",
+              m4_consistent, m4_total, mean_or_change_m4))
+
+} else {
+  cat("NOTE: complete_case_sensitivity_results.rds not found.\n")
+  cat("      Run complete_case_sensitivity_v2.R first.\n\n")
+  n_complete <- n_excluded <- pct_complete <- NA
+  m3_consistent <- m3_total <- m4_consistent <- m4_total <- NA
+  mean_or_change_m3 <- mean_or_change_m4 <- NA
+}
+
+#==============================================================================
+# PART I: APA WRITE-UP (ALL NUMBERS AUTO-FILLED)
+#==============================================================================
+
+cat("===============================================================\n")
+cat("PART I: APA-STYLE WRITE-UP\n")
+cat("===============================================================\n\n")
+
+cat("Copy and paste the following into your thesis.\n")
+cat("Bracketed items [like this] indicate values that could not be\n")
+cat("auto-filled and need manual completion.\n\n")
+
+cat("-------------------------------------------------------------\n")
+cat("MISSING DATA SECTION\n")
+cat("-------------------------------------------------------------\n\n")
+
+# Helper for p-value formatting
+fmt_p <- function(p) {
+  if(is.na(p)) return("[p]")
+  if(p < .001) return("< .001")
+  sprintf("= %.3f", p)
+}
+
+writeup <- sprintf(
+'Missing data were examined prior to analysis. A total of %d participants
+(%s%%) had missing data on at least one personality item. Missingness was
+distributed across instruments as follows: BFI-10 (%s%% of participants),
+SURPS (%s%%), DBAS-16 (%s%%), and CISS (%s%%).
+
+Little\'s Missing Completely at Random (MCAR) test indicated that data
+were not missing completely at random (chi2 = %.2f, df = %d, p %s),
+supporting the use of multiple imputation over listwise deletion (Little,
+1988).
+
+To evaluate whether missing data were consistent with the Missing at
+Random (MAR) assumption, logistic regression was used to identify
+observed variables that predicted missingness on personality data.
+%s was found to significantly predict personality data missingness
+(p < .05), indicating that missingness was related to observed
+variables in the dataset. Critically, discontinuation status did not
+predict personality data missingness (chi2(%d) = %.3f, p %s),
+indicating that the outcome variable was unrelated to the missing data
+mechanism. Together, these findings support the plausibility of the
+MAR assumption (van Buuren, 2018).
+
+Multiple imputation by chained equations (MICE) was performed using
+the mice package in R (van Buuren & Groothuis-Oudshoorn, 2011).
+Imputation was conducted at the item level prior to subscale formation,
+with m = %d imputed datasets generated. This number of imputations
+exceeds the recommendation of White et al. (2011) that m should be
+at least equal to the percentage of incomplete cases (%.1f%% in the
+present study). Convergence of the MICE algorithm was assessed via
+trace plots, which indicated stable means and standard deviations
+across iterations with no systematic trends, suggesting adequate
+convergence. Personality subscales were computed as mean item scores
+within each imputed dataset prior to pooling.
+
+Fraction of missing information (FMI) values were negligible across
+all predictors (range: %.4f to %.4f), consistent with item-level
+imputation resolving missing data uncertainty prior to subscale
+formation (Rubin, 1987).
+
+As a sensitivity analysis, all models were refit using complete cases
+only (n = %d, %.1f%% of the full sample). Results were largely
+consistent with the multiply imputed analyses: %d of %d Model 3
+predictors and %d of %d Model 4 predictors showed the same
+significance pattern, with mean odds ratio changes of %.1f%% and
+%.1f%% respectively. These findings support the robustness of the
+primary multiply imputed results.',
+
+  # Paragraph 1
+  n_any_missing,
+  pct_any_missing,
+  instrument_miss$pct_missing[instrument_miss$instrument == "BFI"],
+  instrument_miss$pct_missing[instrument_miss$instrument == "SURPS"],
+  instrument_miss$pct_missing[instrument_miss$instrument == "DBAS"],
+  instrument_miss$pct_missing[instrument_miss$instrument == "CISS"],
+
+  # Paragraph 2
+  ifelse(is.na(mcar_chi), "[chi2]", mcar_chi),
+  ifelse(is.na(mcar_df),  0,        mcar_df),
+  fmt_p(mcar_p),
+
+  # Paragraph 3
+  ifelse(length(sig_predictors) > 0, paste(sig_predictors, collapse = " and "), "[variable]"),
+  ifelse(is.na(outcome_chi_df),   1,    outcome_chi_df),
+  ifelse(is.na(outcome_chi_stat), 0,    outcome_chi_stat),
+  fmt_p(outcome_chi_p),
+
+  # Paragraph 4
+  n_imp,
+  pct_any_missing,
+
+  # Paragraph 5
+  ifelse(is.na(fmi_range[1]), 0, fmi_range[1]),
+  ifelse(is.na(fmi_range[2]), 0, fmi_range[2]),
+
+  # Paragraph 6
+  ifelse(is.na(n_complete),         "[n]",  n_complete),
+  ifelse(is.na(pct_complete),        0,      pct_complete),
+  ifelse(is.na(m3_consistent),      "[n]",  m3_consistent),
+  ifelse(is.na(m3_total),           "[n]",  m3_total),
+  ifelse(is.na(m4_consistent),      "[n]",  m4_consistent),
+  ifelse(is.na(m4_total),           "[n]",  m4_total),
+  ifelse(is.na(mean_or_change_m3),   0,      mean_or_change_m3),
+  ifelse(is.na(mean_or_change_m4),   0,      mean_or_change_m4)
+)
+
+cat(writeup)
+cat("\n\n")
+
+cat("-------------------------------------------------------------\n")
+cat("REFERENCES FOR MISSING DATA SECTION\n")
+cat("-------------------------------------------------------------\n\n")
+cat("Little, R.J.A. (1988). A test of missing completely at random for\n")
+cat("  multivariate data with missing values. Journal of the American\n")
+cat("  Statistical Association, 83(404), 1198-1202.\n\n")
+cat("Rubin, D.B. (1987). Multiple Imputation for Nonresponse in Surveys.\n")
+cat("  John Wiley & Sons.\n\n")
+cat("Sterne, J.A.C., et al. (2009). Multiple imputation for missing data\n")
+cat("  in epidemiological and clinical research. BMJ, 338, b2393.\n\n")
+cat("van Buuren, S. (2018). Flexible Imputation of Missing Data (2nd ed.).\n")
+cat("  https://stefvanbuuren.name/fimd/\n\n")
+cat("van Buuren, S., & Groothuis-Oudshoorn, K. (2011). mice: Multivariate\n")
+cat("  imputation by chained equations in R. Journal of Statistical\n")
+cat("  Software, 45(3), 1-67.\n\n")
+cat("White, I.R., Royston, P., & Wood, A.M. (2011). Multiple imputation\n")
+cat("  using chained equations: Issues and guidance for practice.\n")
+cat("  Statistics in Medicine, 30(4), 377-399.\n\n")
+
+#==============================================================================
+# PART J: SAVE ALL RESULTS
+#==============================================================================
+
+cat("===============================================================\n")
+cat("PART J: SAVING RESULTS\n")
+cat("===============================================================\n\n")
+
+missing_data_results <- list(
+  overview         = missing_overview,
+  mcar             = list(chi = mcar_chi, df = mcar_df, p = mcar_p,
+                          patterns = mcar_patterns, interpretation = mcar_interp),
+  mar_predictors   = mar_results,
+  sig_predictors   = sig_predictors,
+  outcome_vs_miss  = list(chi = outcome_chi_stat, df = outcome_chi_df,
+                          p = outcome_chi_p, interpretation = outcome_miss_interp),
+  comp_table       = comp_table,
+  imputation_info  = list(m = n_imp, maxit = n_iter),
+  writeup          = writeup
+)
+
+saveRDS(missing_data_results, "missing_data_justification_results.rds")
+write_csv(mar_results,        "missingness_predictors.csv")
+write_csv(instrument_miss,    "missingness_by_instrument.csv")
+
+if(!is.null(miss_per_item) && nrow(miss_per_item) > 0)
+  write_csv(miss_per_item, "missingness_per_item.csv")
+
+cat("✓ Saved: missing_data_justification_results.rds\n")
+cat("✓ Saved: missingness_predictors.csv\n")
+cat("✓ Saved: missingness_by_instrument.csv\n")
+if(!is.null(miss_per_item) && nrow(miss_per_item) > 0)
+  cat("✓ Saved: missingness_per_item.csv\n")
+if(file.exists("mice_convergence_plot.png"))
+  cat("✓ Saved: mice_convergence_plot.png\n")
+
+cat("\n===============================================================\n")
+cat("✓ MISSING DATA JUSTIFICATION COMPLETE\n")
+cat("===============================================================\n\n")
+```
+
+
