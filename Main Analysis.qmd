@@ -990,6 +990,14 @@ cat("═════════════════════════
 #   - Adverse effects: side_effects, safety, dependence, adls
 #   - Withdrawal: stop_wdl_exp (base) + stop_wdl_exp_2 (v2)
 #   - COM-B: motivation, desires, capability
+#   - Stop rate: stop_rate_dc + stop_rate_dc_2
+#   - Benefits (BMQ necessity items only): benefit_1, benefit_4, benefit_5,
+#                                          benefit_6, benefit_dep + _v2 versions
+#                                          NOTE: composite created post-imputation
+#   - Reasons for stopping/would stop: memory, thinking, activities,
+#     socialize, driving, balance, falls, indication, efficacy,
+#     alternative, inf_soc, inf_pres, inf_rphc, interactions,
+#     dependence, reduc, cost + _v2 versions
 #==============================================================================
 
 cat("\n")
@@ -1013,18 +1021,17 @@ cat("═════════════════════════
 cat("PART A: COALESCING ADVERSE EFFECTS VARIABLES\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Define variable sets
 side_effects_base <- paste0("side_effects_", 1:4)
-side_effects_v2 <- paste0("side_effects_", 1:4, "_v2")
+side_effects_v2   <- paste0("side_effects_", 1:4, "_v2")
 
 safety_base <- paste0("safety_", 1:4)
-safety_v2 <- paste0("safety_", 1:4, "_v2")
+safety_v2   <- paste0("safety_", 1:4, "_v2")
 
 adl_base <- paste0("adls_", 1:2)
-adl_v2 <- paste0("adls_", 1:2, "_v2")
+adl_v2   <- paste0("adls_", 1:2, "_v2")
 
 dependence_base <- paste0("dependence_", 1:3)
-dependence_v2 <- paste0("dependence_", 1:3, "_v2")
+dependence_v2   <- paste0("dependence_", 1:3, "_v2")
 
 # Function to coalesce and report
 coalesce_variables <- function(data, base_vars, v2_vars, var_name) {
@@ -1032,135 +1039,103 @@ coalesce_variables <- function(data, base_vars, v2_vars, var_name) {
   cat("Coalescing", var_name, "variables...\n")
   cat("─────────────────────────────────────────────────────────────\n")
   
-  n_merged <- 0
+  n_merged    <- 0
   n_base_only <- 0
-  n_v2_only <- 0
-  n_both <- 0
-  n_neither <- 0
+  n_v2_only   <- 0
+  n_both      <- 0
+  n_neither   <- 0
   
   for(i in seq_along(base_vars)) {
     base_var <- base_vars[i]
-    v2_var <- v2_vars[i]
-    
-    # Check if variables exist
+    v2_var   <- v2_vars[i]
     has_base <- base_var %in% names(data)
-    has_v2 <- v2_var %in% names(data)
+    has_v2   <- v2_var   %in% names(data)
     
     if(has_base && has_v2) {
-      # Count patterns before merging
-      n_base_only <- n_base_only + sum(!is.na(data[[base_var]]) & is.na(data[[v2_var]]))
-      n_v2_only <- n_v2_only + sum(is.na(data[[base_var]]) & !is.na(data[[v2_var]]))
-      n_both <- n_both + sum(!is.na(data[[base_var]]) & !is.na(data[[v2_var]]))
-      n_neither <- n_neither + sum(is.na(data[[base_var]]) & is.na(data[[v2_var]]))
-      
-      # Coalesce: take base if available, otherwise v2
+      n_base_only <- n_base_only + sum(!is.na(data[[base_var]]) &  is.na(data[[v2_var]]))
+      n_v2_only   <- n_v2_only   + sum( is.na(data[[base_var]]) & !is.na(data[[v2_var]]))
+      n_both      <- n_both      + sum(!is.na(data[[base_var]]) & !is.na(data[[v2_var]]))
+      n_neither   <- n_neither   + sum( is.na(data[[base_var]]) &  is.na(data[[v2_var]]))
       data[[base_var]] <- coalesce(data[[base_var]], data[[v2_var]])
-      
-      # Remove v2 version
-      data[[v2_var]] <- NULL
-      
+      data[[v2_var]]   <- NULL
       n_merged <- n_merged + 1
-      
     } else if(!has_base && has_v2) {
-      # Only v2 exists - rename to base
       data[[base_var]] <- data[[v2_var]]
-      data[[v2_var]] <- NULL
+      data[[v2_var]]   <- NULL
       n_merged <- n_merged + 1
-      
     } else if(has_base && !has_v2) {
-      # Only base exists - keep as is
       n_merged <- n_merged + 1
     }
   }
   
   cat("  Variables merged:", n_merged, "/", length(base_vars), "\n")
   cat("  Responses from base only:", n_base_only, "\n")
-  cat("  Responses from v2 only:", n_v2_only, "\n")
-  cat("  Responses in both (conflict):", n_both, "\n")
+  cat("  Responses from v2 only:",   n_v2_only,   "\n")
+  cat("  Responses in both (conflict):", n_both,  "\n")
   cat("  Missing in both:", n_neither, "\n")
-  
   if(n_both > 0) {
     cat("  ⚠️  Note:", n_both, "cases had both versions answered\n")
     cat("     → Kept base version (stopped users' response)\n")
   }
-  
   cat("  ✓ Merged into:", paste(base_vars, collapse = ", "), "\n\n")
-  
   return(data)
 }
 
-# Coalesce each set
 SIMOA <- coalesce_variables(SIMOA, side_effects_base, side_effects_v2, "Side Effects")
-SIMOA <- coalesce_variables(SIMOA, safety_base, safety_v2, "Safety")
-SIMOA <- coalesce_variables(SIMOA, adl_base, adl_v2, "ADL Impact")
-SIMOA <- coalesce_variables(SIMOA, dependence_base, dependence_v2, "Dependence")
+SIMOA <- coalesce_variables(SIMOA, safety_base,       safety_v2,       "Safety")
+SIMOA <- coalesce_variables(SIMOA, adl_base,          adl_v2,          "ADL Impact")
+SIMOA <- coalesce_variables(SIMOA, dependence_base,   dependence_v2,   "Dependence")
 
 # -----------------------------------------------------------------------------
-# PART B: WITHDRAWAL VARIABLES (SPECIAL HANDLING)
+# PART B: WITHDRAWAL VARIABLES
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("PART B: COALESCING WITHDRAWAL VARIABLES\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("NOTE: Withdrawal uses different naming pattern:\n")
-cat("  • Stopped users (freq_dich=2): stop_wdl_exp___0 through stop_wdl_exp___4\n")
-cat("  • Current users (freq_dich=0,1): stop_wdl_exp_2___0 through stop_wdl_exp_2___4\n\n")
-
-# Define withdrawal checkbox variables
 withdrawal_base <- paste0("stop_wdl_exp___", 0:4)
-withdrawal_v2 <- paste0("stop_wdl_exp_2___", 0:4)
+withdrawal_v2   <- paste0("stop_wdl_exp_2___", 0:4)
 
-# Check which exist
 withdrawal_base_exist <- withdrawal_base %in% names(SIMOA)
-withdrawal_v2_exist <- withdrawal_v2 %in% names(SIMOA)
+withdrawal_v2_exist   <- withdrawal_v2   %in% names(SIMOA)
 
 cat("Variables found:\n")
 cat("  Base (stop_wdl_exp):", sum(withdrawal_base_exist), "/5\n")
-cat("  V2 (stop_wdl_exp_2):", sum(withdrawal_v2_exist), "/5\n\n")
+cat("  V2 (stop_wdl_exp_2):", sum(withdrawal_v2_exist),   "/5\n\n")
 
-# Coalesce withdrawal checkboxes
 if(any(withdrawal_base_exist) || any(withdrawal_v2_exist)) {
   
   cat("Coalescing withdrawal checkboxes...\n")
   cat("─────────────────────────────────────────────────────────────\n")
   
-  n_base_only <- 0
-  n_v2_only <- 0
-  n_both <- 0
+  n_base_only <- 0; n_v2_only <- 0; n_both <- 0
   
   for(i in seq_along(withdrawal_base)) {
     base_var <- withdrawal_base[i]
-    v2_var <- withdrawal_v2[i]
-    
+    v2_var   <- withdrawal_v2[i]
     has_base <- base_var %in% names(SIMOA)
-    has_v2 <- v2_var %in% names(SIMOA)
+    has_v2   <- v2_var   %in% names(SIMOA)
     
     if(has_base && has_v2) {
-      # Count patterns
-      n_base_only <- n_base_only + sum(!is.na(SIMOA[[base_var]]) & is.na(SIMOA[[v2_var]]))
-      n_v2_only <- n_v2_only + sum(is.na(SIMOA[[base_var]]) & !is.na(SIMOA[[v2_var]]))
-      n_both <- n_both + sum(!is.na(SIMOA[[base_var]]) & !is.na(SIMOA[[v2_var]]))
-      
-      # Coalesce
+      n_base_only <- n_base_only + sum(!is.na(SIMOA[[base_var]]) &  is.na(SIMOA[[v2_var]]))
+      n_v2_only   <- n_v2_only   + sum( is.na(SIMOA[[base_var]]) & !is.na(SIMOA[[v2_var]]))
+      n_both      <- n_both      + sum(!is.na(SIMOA[[base_var]]) & !is.na(SIMOA[[v2_var]]))
       SIMOA[[base_var]] <- coalesce(SIMOA[[base_var]], SIMOA[[v2_var]])
-      SIMOA[[v2_var]] <- NULL
-      
+      SIMOA[[v2_var]]   <- NULL
     } else if(!has_base && has_v2) {
       SIMOA[[base_var]] <- SIMOA[[v2_var]]
-      SIMOA[[v2_var]] <- NULL
+      SIMOA[[v2_var]]   <- NULL
     }
   }
   
   cat("  Responses from stop_wdl_exp only:", n_base_only, "\n")
   cat("  Responses from stop_wdl_exp_2 only:", n_v2_only, "\n")
   cat("  Responses in both (conflict):", n_both, "\n")
-  
   if(n_both > 0) {
     cat("  ⚠️  Note:", n_both, "cases had both versions\n")
     cat("     → Kept stop_wdl_exp (stopped users' response)\n")
   }
-  
   cat("  ✓ Merged into: stop_wdl_exp___0 through stop_wdl_exp___4\n\n")
   
 } else {
@@ -1175,50 +1150,34 @@ cat("═════════════════════════
 cat("PART C: CREATING WITHDRAWAL COMBINED VARIABLE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Define merged variables
 wdl_vars <- c(
-  none = "stop_wdl_exp___0",
+  none     = "stop_wdl_exp___0",
   insomnia = "stop_wdl_exp___1",
-  anxiety = "stop_wdl_exp___2",
+  anxiety  = "stop_wdl_exp___2",
   mh_other = "stop_wdl_exp___3",
   physical = "stop_wdl_exp___4"
 )
 
-# Check if all exist
-wdl_vars_exist <- all(wdl_vars %in% names(SIMOA))
-
-if(wdl_vars_exist) {
+if(all(wdl_vars %in% names(SIMOA))) {
   
-  # Replace NA with 0 (unchecked boxes)
   cat("Replacing NA with 0 for unchecked boxes...\n")
-  for(var in wdl_vars) {
-    SIMOA[[var]][is.na(SIMOA[[var]])] <- 0
-  }
+  for(var in wdl_vars) SIMOA[[var]][is.na(SIMOA[[var]])] <- 0
   
-  # Create symptom count (excluding "none")
   SIMOA <- SIMOA %>%
     mutate(
       wdl_symptom_count = 
-        .data[[wdl_vars["insomnia"]]] + 
-        .data[[wdl_vars["anxiety"]]] + 
-        .data[[wdl_vars["mh_other"]]] + 
-        .data[[wdl_vars["physical"]]]
-    )
-  
-  # Create combined ordinal variable
-  SIMOA <- SIMOA %>%
-    mutate(
+        .data[[wdl_vars["insomnia"]]] +
+        .data[[wdl_vars["anxiety"]]]  +
+        .data[[wdl_vars["mh_other"]]] +
+        .data[[wdl_vars["physical"]]],
+      
       stop_wdl_exp_combined = case_when(
-        # Priority: "no withdrawal" takes precedence
         .data[[wdl_vars["none"]]] == 1 ~ 0,
-        # No symptoms checked
-        wdl_symptom_count == 0 ~ 0,
-        # Single symptoms
+        wdl_symptom_count == 0         ~ 0,
         wdl_symptom_count == 1 & .data[[wdl_vars["insomnia"]]] == 1 ~ 1,
-        wdl_symptom_count == 1 & .data[[wdl_vars["anxiety"]]] == 1 ~ 2,
+        wdl_symptom_count == 1 & .data[[wdl_vars["anxiety"]]]  == 1 ~ 2,
         wdl_symptom_count == 1 & .data[[wdl_vars["mh_other"]]] == 1 ~ 3,
         wdl_symptom_count == 1 & .data[[wdl_vars["physical"]]] == 1 ~ 4,
-        # Multiple symptoms
         wdl_symptom_count >= 2 ~ 5,
         TRUE ~ 0
       ),
@@ -1237,222 +1196,325 @@ if(wdl_vars_exist) {
       )
     )
   
-  cat("✓ Created wdl_symptom_count (0-4)\n")
-  cat("✓ Created stop_wdl_exp_combined (0-5)\n")
+  cat("✓ Created wdl_symptom_count (0–4)\n")
+  cat("✓ Created stop_wdl_exp_combined (0–5)\n")
   cat("✓ Created stop_wdl_exp_combined_factor (labeled)\n\n")
   
-  # Show distribution
   cat("WITHDRAWAL DISTRIBUTION:\n")
   cat("─────────────────────────────────────────────────────────────\n")
-  
-  wdl_table <- table(SIMOA$stop_wdl_exp_combined, useNA = "ifany")
+  wdl_table  <- table(SIMOA$stop_wdl_exp_combined, useNA = "ifany")
   wdl_labels <- c(
-    "0 (No withdrawal)",
-    "1 (Insomnia only)",
-    "2 (Anxiety only)",
-    "3 (Other MH only)",
-    "4 (Physical only)",
-    "5 (Multiple symptoms)"
+    "0 (No withdrawal)", "1 (Insomnia only)", "2 (Anxiety only)",
+    "3 (Other MH only)", "4 (Physical only)", "5 (Multiple symptoms)"
   )
-  
   for(i in 0:5) {
     if(as.character(i) %in% names(wdl_table)) {
-      n <- wdl_table[as.character(i)]
+      n   <- wdl_table[as.character(i)]
       pct <- round(100 * n / sum(wdl_table[!is.na(names(wdl_table))]), 1)
       cat(sprintf("  %-30s: n=%4d (%5.1f%%)\n", wdl_labels[i+1], n, pct))
     }
   }
-  
-  if("NA" %in% names(wdl_table)) {
+  if("NA" %in% names(wdl_table))
     cat(sprintf("  %-30s: n=%4d\n", "Missing", wdl_table["NA"]))
-  }
   cat("\n")
-  
-  # Symptom count distribution
-  cat("SYMPTOM COUNT DISTRIBUTION:\n")
-  cat("─────────────────────────────────────────────────────────────\n")
-  count_table <- table(SIMOA$wdl_symptom_count, useNA = "ifany")
-  for(i in 0:4) {
-    if(as.character(i) %in% names(count_table)) {
-      n <- count_table[as.character(i)]
-      pct <- round(100 * n / sum(count_table[!is.na(names(count_table))]), 1)
-      cat(sprintf("  %d symptoms: n=%4d (%5.1f%%)\n", i, n, pct))
-    }
-  }
-  cat("\n")
-  
-  cat("CODING SCHEME:\n")
-  cat("  0 = No withdrawal effects\n")
-  cat("  1 = Insomnia only\n")
-  cat("  2 = Anxiety only\n")
-  cat("  3 = Other mental health only\n")
-  cat("  4 = Physical effects only\n")
-  cat("  5 = Multiple symptoms (2+ types)\n\n")
   
 } else {
   cat("⚠️  Cannot create combined variable - withdrawal checkboxes missing\n\n")
 }
 
 # -----------------------------------------------------------------------------
-# PART D: COM-B VARIABLES (Motivation, Desires, Capability)
+# PART D: COM-B VARIABLES
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("PART D: COALESCING COM-B VARIABLES\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("NOTE: These variables measure separate constructs within COM-B framework:\n")
-cat("  • Motivation: psychological drivers to stop\n")
-cat("  • Desires: personal and social pressure to stop\n")
-cat("  • Capability: perceived ability to stop\n")
-cat("They will be kept as separate items (no composite scores).\n\n")
-
-# Motivation (3 items)
 motivation_base <- paste0("motivation_", 1:3)
-motivation_v2 <- paste0("motivation_", 1:3, "_v2")
+motivation_v2   <- paste0("motivation_", 1:3, "_v2")
 
-# Desires (3 items)
 desires_base <- paste0("desires_", 1:3)
-desires_v2 <- paste0("desires_", 1:3, "_v2")
+desires_v2   <- paste0("desires_", 1:3, "_v2")
 
-# Capability (2 items - note unusual naming)
 capability_base <- c("capability_1", "capability")
-capability_v2 <- c("capability_1_v2", "capability_v2")
+capability_v2   <- c("capability_1_v2", "capability_v2")
 
-# Coalesce motivation
 SIMOA <- coalesce_variables(SIMOA, motivation_base, motivation_v2, "Motivation")
+SIMOA <- coalesce_variables(SIMOA, desires_base,    desires_v2,    "Desires")
 
-# Coalesce desires
-SIMOA <- coalesce_variables(SIMOA, desires_base, desires_v2, "Desires")
-
-# Coalesce capability (manual due to naming)
 cat("Coalescing Capability variables...\n")
 cat("─────────────────────────────────────────────────────────────\n")
-
-n_merged <- 0
 for(i in seq_along(capability_base)) {
   base_var <- capability_base[i]
-  v2_var <- capability_v2[i]
-  
+  v2_var   <- capability_v2[i]
   has_base <- base_var %in% names(SIMOA)
-  has_v2 <- v2_var %in% names(SIMOA)
+  has_v2   <- v2_var   %in% names(SIMOA)
   
   if(has_base && has_v2) {
     SIMOA[[base_var]] <- coalesce(SIMOA[[base_var]], SIMOA[[v2_var]])
-    SIMOA[[v2_var]] <- NULL
-    n_merged <- n_merged + 1
+    SIMOA[[v2_var]]   <- NULL
     cat("  ✓ Merged", v2_var, "→", base_var, "\n")
   } else if(!has_base && has_v2) {
     SIMOA[[base_var]] <- SIMOA[[v2_var]]
-    SIMOA[[v2_var]] <- NULL
-    n_merged <- n_merged + 1
+    SIMOA[[v2_var]]   <- NULL
     cat("  ✓ Renamed", v2_var, "→", base_var, "\n")
   } else if(has_base && !has_v2) {
-    n_merged <- n_merged + 1
+    cat("  ✓ Kept", base_var, "(no v2 version)\n")
+  } else {
+    cat("  ⚠️  Neither", base_var, "nor", v2_var, "found\n")
+  }
+}
+cat("\n")
+
+# -----------------------------------------------------------------------------
+# PART E: STOP RATE
+# -----------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART E: COALESCING STOP RATE VARIABLE\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+cat("NOTE:\n")
+cat("  • freq_dich = 2 (stopped users):   stop_rate_dc\n")
+cat("  • freq_dich = 0/1 (current users): stop_rate_dc_2\n\n")
+
+has_stop_rate    <- "stop_rate_dc"   %in% names(SIMOA)
+has_stop_rate_v2 <- "stop_rate_dc_2" %in% names(SIMOA)
+
+cat("Variables found:\n")
+cat("  stop_rate_dc:  ", has_stop_rate,    "\n")
+cat("  stop_rate_dc_2:", has_stop_rate_v2, "\n\n")
+
+if(has_stop_rate && has_stop_rate_v2) {
+  
+  n_base_only <- sum(!is.na(SIMOA$stop_rate_dc)  &  is.na(SIMOA$stop_rate_dc_2))
+  n_v2_only   <- sum( is.na(SIMOA$stop_rate_dc)  & !is.na(SIMOA$stop_rate_dc_2))
+  n_both      <- sum(!is.na(SIMOA$stop_rate_dc)  & !is.na(SIMOA$stop_rate_dc_2))
+  n_neither   <- sum( is.na(SIMOA$stop_rate_dc)  &  is.na(SIMOA$stop_rate_dc_2))
+  
+  SIMOA$stop_rate_dc   <- coalesce(SIMOA$stop_rate_dc, SIMOA$stop_rate_dc_2)
+  SIMOA$stop_rate_dc_2 <- NULL
+  
+  cat("  Responses from stop_rate_dc only:  ", n_base_only, "\n")
+  cat("  Responses from stop_rate_dc_2 only:", n_v2_only,   "\n")
+  cat("  Responses in both (conflict):      ", n_both,      "\n")
+  cat("  Missing in both:                   ", n_neither,   "\n")
+  if(n_both > 0) {
+    cat("  ⚠️  Note:", n_both, "cases had both versions\n")
+    cat("     → Kept stop_rate_dc (stopped users' response)\n")
+  }
+  cat("  ✓ Merged into: stop_rate_dc\n\n")
+  
+  cat("STOP RATE DISTRIBUTION:\n")
+  cat("─────────────────────────────────────────────────────────────\n")
+  stop_rate_table  <- table(SIMOA$stop_rate_dc, useNA = "ifany")
+  stop_rate_labels <- c(
+    "0 (Abruptly - cold turkey)",
+    "1 (Slowly - 1-4 weeks)",
+    "2 (Very slowly - >4 weeks)"
+  )
+  for(i in 0:2) {
+    if(as.character(i) %in% names(stop_rate_table)) {
+      n   <- stop_rate_table[as.character(i)]
+      pct <- round(100 * n / sum(stop_rate_table[!is.na(names(stop_rate_table))]), 1)
+      cat(sprintf("  %-35s: n=%4d (%5.1f%%)\n", stop_rate_labels[i+1], n, pct))
+    }
+  }
+  if("NA" %in% names(stop_rate_table))
+    cat(sprintf("  %-35s: n=%4d\n", "Missing", stop_rate_table["NA"]))
+  cat("\n")
+  
+} else if(!has_stop_rate && has_stop_rate_v2) {
+  SIMOA$stop_rate_dc   <- SIMOA$stop_rate_dc_2
+  SIMOA$stop_rate_dc_2 <- NULL
+  cat("  ✓ Renamed stop_rate_dc_2 → stop_rate_dc\n\n")
+} else if(has_stop_rate && !has_stop_rate_v2) {
+  cat("  ✓ stop_rate_dc already exists with no v2 version to merge\n\n")
+} else {
+  cat("  ⚠️  Neither stop_rate_dc nor stop_rate_dc_2 found\n\n")
+}
+
+# -----------------------------------------------------------------------------
+# PART F: BENEFIT ITEMS (BMQ NECESSITY — RAW ITEMS ONLY)
+# -----------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART F: COALESCING BENEFIT ITEMS (BMQ NECESSITY)\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+cat("NOTE:\n")
+cat("  • freq_dich = 2 (current users):   benefit_1, benefit_4, benefit_5,\n")
+cat("                                      benefit_6, benefit_dep\n")
+cat("  • freq_dich = 0/1 (stopped users): benefit_1_v2 ... benefit_dep_v2\n")
+cat("  • Items adopted from the BMQ Necessity subscale (5-point Likert).\n")
+cat("  • Raw items only retained here — composite created POST-imputation\n")
+cat("    in Chunk 9 to avoid imputing a derived variable.\n\n")
+
+benefit_base <- c("benefit_1", "benefit_4", "benefit_5", "benefit_6", "benefit_dep")
+benefit_v2   <- c("benefit_1_v2", "benefit_4_v2", "benefit_5_v2",
+                  "benefit_6_v2", "benefit_dep_v2")
+
+cat("Coalescing Benefit (BMQ Necessity) items...\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+n_base_only_ben <- 0; n_v2_only_ben <- 0
+n_both_ben      <- 0; n_neither_ben <- 0
+
+for(i in seq_along(benefit_base)) {
+  base_var <- benefit_base[i]
+  v2_var   <- benefit_v2[i]
+  has_base <- base_var %in% names(SIMOA)
+  has_v2   <- v2_var   %in% names(SIMOA)
+  
+  if(has_base && has_v2) {
+    n_base_only_ben <- n_base_only_ben + sum(!is.na(SIMOA[[base_var]]) &  is.na(SIMOA[[v2_var]]))
+    n_v2_only_ben   <- n_v2_only_ben   + sum( is.na(SIMOA[[base_var]]) & !is.na(SIMOA[[v2_var]]))
+    n_both_ben      <- n_both_ben      + sum(!is.na(SIMOA[[base_var]]) & !is.na(SIMOA[[v2_var]]))
+    n_neither_ben   <- n_neither_ben   + sum( is.na(SIMOA[[base_var]]) &  is.na(SIMOA[[v2_var]]))
+    SIMOA[[base_var]] <- coalesce(SIMOA[[base_var]], SIMOA[[v2_var]])
+    SIMOA[[v2_var]]   <- NULL
+    cat("  ✓ Merged", v2_var, "→", base_var, "\n")
+  } else if(!has_base && has_v2) {
+    SIMOA[[base_var]] <- SIMOA[[v2_var]]
+    SIMOA[[v2_var]]   <- NULL
+    cat("  ✓ Renamed", v2_var, "→", base_var, "\n")
+  } else if(has_base && !has_v2) {
     cat("  ✓ Kept", base_var, "(no v2 version)\n")
   } else {
     cat("  ⚠️  Neither", base_var, "nor", v2_var, "found\n")
   }
 }
 
-cat("  Variables merged:", n_merged, "/", length(capability_base), "\n\n")
-
-# Check which items exist
-motivation_exists <- motivation_base %in% names(SIMOA)
-desires_exists <- desires_base %in% names(SIMOA)
-capability_exists <- capability_base %in% names(SIMOA)
-
-cat("COM-B items successfully merged:\n")
-cat("  Motivation:", sum(motivation_exists), "/", length(motivation_base), "\n")
-cat("  Desires:", sum(desires_exists), "/", length(desires_base), "\n")
-cat("  Capability:", sum(capability_exists), "/", length(capability_base), "\n\n")
+cat("\n  Responses from base only:", n_base_only_ben, "\n")
+cat("  Responses from v2 only:",   n_v2_only_ben,   "\n")
+cat("  Responses in both (conflict):", n_both_ben,  "\n")
+cat("  Missing in both:", n_neither_ben, "\n")
+if(n_both_ben > 0) {
+  cat("  ⚠️  Note:", n_both_ben, "cases had both versions\n")
+  cat("     → Kept base version\n")
+}
+cat("\n")
+cat("  ℹ️  BMQ_necessity composite will be created in Chunk 9\n")
+cat("     after multiple imputation of raw items.\n\n")
 
 # -----------------------------------------------------------------------------
-# PART E: VERIFICATION & CLEANUP
+# PART G: REASONS FOR STOPPING / WOULD STOP VARIABLES
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART E: VERIFICATION & CLEANUP\n")
+cat("PART G: COALESCING REASONS FOR STOPPING VARIABLES\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Check for remaining v2 or _2 variables
+cat("NOTE:\n")
+cat("  • freq_dich = 2 (current users):   base versions\n")
+cat("    Framing: 'I WOULD STOP MY SLEEPING PILLS IF...'\n")
+cat("  • freq_dich = 0/1 (stopped users): _v2 versions\n")
+cat("    Framing: 'I STOPPED TAKING SLEEPING PILLS BECAUSE...'\n")
+cat("  Both use identical 5-point Likert scale (1=Strongly Disagree\n")
+cat("  to 5=Strongly Agree). Coalesced into single variable per item.\n\n")
+
+reasons_base <- c(
+  "memory", "thinking", "activities", "socialize", "driving",
+  "balance", "falls", "indication", "efficacy", "alternative",
+  "inf_soc", "inf_pres", "inf_rphc", "interactions",
+  "dependence", "reduc", "cost"
+)
+reasons_v2 <- paste0(reasons_base, "_v2")
+
+cat("Coalescing reasons variables...\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+n_base_only_rea <- 0; n_v2_only_rea <- 0
+n_both_rea      <- 0; n_neither_rea <- 0
+
+for(i in seq_along(reasons_base)) {
+  base_var <- reasons_base[i]
+  v2_var   <- reasons_v2[i]
+  has_base <- base_var %in% names(SIMOA)
+  has_v2   <- v2_var   %in% names(SIMOA)
+  
+  if(has_base && has_v2) {
+    n_base_only_rea <- n_base_only_rea + sum(!is.na(SIMOA[[base_var]]) &  is.na(SIMOA[[v2_var]]))
+    n_v2_only_rea   <- n_v2_only_rea   + sum( is.na(SIMOA[[base_var]]) & !is.na(SIMOA[[v2_var]]))
+    n_both_rea      <- n_both_rea      + sum(!is.na(SIMOA[[base_var]]) & !is.na(SIMOA[[v2_var]]))
+    n_neither_rea   <- n_neither_rea   + sum( is.na(SIMOA[[base_var]]) &  is.na(SIMOA[[v2_var]]))
+    SIMOA[[base_var]] <- coalesce(SIMOA[[base_var]], SIMOA[[v2_var]])
+    SIMOA[[v2_var]]   <- NULL
+    cat("  ✓ Merged", v2_var, "→", base_var, "\n")
+  } else if(!has_base && has_v2) {
+    SIMOA[[base_var]] <- SIMOA[[v2_var]]
+    SIMOA[[v2_var]]   <- NULL
+    cat("  ✓ Renamed", v2_var, "→", base_var, "\n")
+  } else if(has_base && !has_v2) {
+    cat("  ✓ Kept", base_var, "(no v2 version)\n")
+  } else {
+    cat("  ⚠️  Neither", base_var, "nor", v2_var, "found\n")
+  }
+}
+
+cat("\n  Responses from base only:", n_base_only_rea, "\n")
+cat("  Responses from v2 only:",   n_v2_only_rea,   "\n")
+cat("  Responses in both (conflict):", n_both_rea,  "\n")
+cat("  Missing in both:", n_neither_rea, "\n")
+if(n_both_rea > 0) {
+  cat("  ⚠️  Note:", n_both_rea, "cases had both versions\n")
+  cat("     → Kept base version\n")
+}
+cat("\n")
+
+# -----------------------------------------------------------------------------
+# PART H: VERIFICATION & CLEANUP
+# -----------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART H: VERIFICATION & CLEANUP\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
 remaining_v2 <- grep("_v2$|_2___[0-9]$", names(SIMOA), value = TRUE)
 
 if(length(remaining_v2) > 0) {
-  cat("⚠️  WARNING: Found remaining v2/_2 variables:\n")
-  for(v in remaining_v2) {
-    cat("  •", v, "\n")
-  }
+  cat("⚠️  WARNING: Remaining v2/_2 variables found:\n")
+  for(v in remaining_v2) cat("  •", v, "\n")
   cat("\nThese may need manual review.\n\n")
 } else {
   cat("✓ No v2 or _2 variables remaining\n")
   cat("✓ All current/former user versions successfully merged\n\n")
 }
 
-# Summary of created variables
-cat("VARIABLES CREATED/MERGED:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-
-cat("\nAdverse Effects (merged):\n")
-cat("  • Side effects:", paste(side_effects_base, collapse = ", "), "\n")
-cat("  • Safety:", paste(safety_base, collapse = ", "), "\n")
-cat("  • ADL impact:", paste(adl_base, collapse = ", "), "\n")
-cat("  • Dependence:", paste(dependence_base, collapse = ", "), "\n")
-
-cat("\nWithdrawal (merged + combined):\n")
-cat("  • Checkboxes:", paste(withdrawal_base, collapse = ", "), "\n")
-if("stop_wdl_exp_combined" %in% names(SIMOA)) {
-  cat("  • stop_wdl_exp_combined (ordinal 0-5)\n")
-  cat("  • wdl_symptom_count (count 0-4)\n")
-  cat("  • stop_wdl_exp_combined_factor (labeled)\n")
-}
-
-cat("\nCOM-B (merged, kept separate):\n")
-if(sum(motivation_exists) > 0) {
-  cat("  • Motivation:", paste(motivation_base[motivation_exists], collapse = ", "), "\n")
-}
-if(sum(desires_exists) > 0) {
-  cat("  • Desires:", paste(desires_base[desires_exists], collapse = ", "), "\n")
-}
-if(sum(capability_exists) > 0) {
-  cat("  • Capability:", paste(capability_base[capability_exists], collapse = ", "), "\n")
-}
-
-cat("\n")
-
 # -----------------------------------------------------------------------------
-# PART F: SAVE COMBINED DATASET
+# PART I: SAVE COMBINED DATASET
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART F: SAVING COMBINED DATASET\n")
+cat("PART I: SAVING COMBINED DATASET\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Save combined dataset
 saveRDS(SIMOA, "SIMOA_combined.rds")
 cat("✓ Saved: SIMOA_combined.rds\n\n")
 
-# Create summary
 combining_summary <- list(
   adverse_effects = list(
     side_effects = side_effects_base,
-    safety = safety_base,
-    adl = adl_base,
-    dependence = dependence_base
+    safety       = safety_base,
+    adl          = adl_base,
+    dependence   = dependence_base
   ),
   withdrawal = list(
     checkboxes = withdrawal_base,
-    combined = if("stop_wdl_exp_combined" %in% names(SIMOA)) "stop_wdl_exp_combined" else NULL,
-    count = if("wdl_symptom_count" %in% names(SIMOA)) "wdl_symptom_count" else NULL
+    combined   = if("stop_wdl_exp_combined" %in% names(SIMOA)) "stop_wdl_exp_combined" else NULL,
+    count      = if("wdl_symptom_count"     %in% names(SIMOA)) "wdl_symptom_count"     else NULL
   ),
   comb = list(
-    motivation = motivation_base[motivation_exists],
-    desires = desires_base[desires_exists],
-    capability = capability_base[capability_exists]
+    motivation = motivation_base,
+    desires    = desires_base,
+    capability = capability_base
   ),
+  stop_rate     = if("stop_rate_dc" %in% names(SIMOA)) "stop_rate_dc" else NULL,
+  benefit_items = benefit_base,
+  reasons_items = reasons_base,
   n_observations = nrow(SIMOA),
-  n_variables = ncol(SIMOA),
-  remaining_v2 = remaining_v2
+  n_variables    = ncol(SIMOA),
+  remaining_v2   = remaining_v2
 )
 
 saveRDS(combining_summary, "variable_combining_summary.rds")
@@ -1464,15 +1526,31 @@ cat("═════════════════════════
 
 cat("SUMMARY:\n")
 cat("  • Adverse effects: merged from stopped/current user versions\n")
-cat("  • Withdrawal: merged stop_wdl_exp + stop_wdl_exp_2, created combined variable\n")
-cat("  • COM-B: merged as separate items (no composites)\n")
+cat("  • Withdrawal: merged + combined variable created\n")
+cat("  • COM-B: merged as separate items\n")
+cat("  • Stop rate: merged stop_rate_dc + stop_rate_dc_2\n")
+cat("  • BMQ Necessity: 5 raw items merged (composite deferred to Chunk 9)\n")
+cat("  • Reasons for stopping/would stop: 17 items merged\n")
 cat("  • Dataset saved: SIMOA_combined.rds\n")
-cat("  • Ready for variable reduction (next chunk)\n\n")
+cat("  • Ready for variable selection (Chunk 6)\n\n")
 ```
 
 
 
+
+## DDE/Weekly Use Variable Creation
+```{r}
+
+```
+
+
+
+
 ## Variable Selection and Preperation
+
+Remember to add the weekly and daily use from the section above to this code. I have run this and there are no issues 
+but I need the conversion from DG before I write the code. 
+
 ```{r}
 #==============================================================================
 # CHUNK 6: VARIABLE SELECTION & PREPARATION
@@ -1484,8 +1562,14 @@ cat("  • Ready for variable reduction (next chunk)\n\n")
 #   - Health condition counts
 #   - Sleep aid frequency variables
 #   - Combined adverse effects, withdrawal, COM-B variables
+#   - BMQ Necessity raw items only (composite created post-imputation, Chunk 9)
+#   - Medication burden (4 separate items)
+#   - Length of BZRA use (c_lengthofuse)
+#   - Reasons for stopping / would stop (17 items)
+#   - Stop rate (stop_rate_dc)
 #   - Personality scales (DBAS, BFI, SURPS, CISS)
 #   - Reverse coding of personality items
+#   - Full variable inventory
 #==============================================================================
 
 cat("\n")
@@ -1520,18 +1604,28 @@ core_demographics <- c("age", "sex", "education", "income", "employment", "drivi
 # Health/clinical variables
 health_vars <- c("phq2_score", "osss_3_score", "gen_health", "med_quant")
 
-# Sleep aids (will be recoded)
+# Length of BZRA use
+length_of_use <- "c_lengthofuse"
+
+# Medication burden (4 separate items — NOT composited)
+# NOTE: Naming inconsistency preserved to match REDCap export exactly
+med_burden_vars <- c("med_burden_1", "med_burden2", "medburden_3", "med_burden_4")
+
+# Sleep aids (will be recoded NA → 0)
 sleep_aids <- c("alc_sleep", "can_sleep", "melatonin_use", "op_sleep")
 
 # Combined adverse effects variables (from Chunk 5)
 side_effects_items <- paste0("side_effects_", 1:4)
-safety_items <- paste0("safety_", 1:4)
-adl_items <- paste0("adls_", 1:2)
-dependence_items <- paste0("dependence_", 1:3)
+safety_items       <- paste0("safety_", 1:4)
+adl_items          <- paste0("adls_", 1:2)
+dependence_items   <- paste0("dependence_", 1:3)
 
 # Withdrawal (combined variable from Chunk 5)
 withdrawal_combined <- "stop_wdl_exp_combined"
-withdrawal_count <- "wdl_symptom_count"
+withdrawal_count    <- "wdl_symptom_count"
+
+# Stop rate (merged from Chunk 5)
+stop_rate_var <- "stop_rate_dc"
 
 # COM-B variables (from Chunk 5)
 comb_vars <- c(
@@ -1540,14 +1634,46 @@ comb_vars <- c(
   c("capability_1", "capability")
 )
 
+# BMQ Necessity raw items only — composite (BMQ_necessity) created in Chunk 9
+# post-imputation to avoid imputing a derived variable
+bmq_items <- c("benefit_1", "benefit_4", "benefit_5", "benefit_6", "benefit_dep")
+
+# Reasons for stopping / would stop (17 items, merged from Chunk 5)
+reasons_vars <- c(
+  "memory", "thinking", "activities", "socialize", "driving",
+  "balance", "falls", "indication", "efficacy", "alternative",
+  "inf_soc", "inf_pres", "inf_rphc", "interactions",
+  "dependence", "reduc", "cost"
+)
+
 # Personality scales
-dbas_items <- c("dbas1", paste0("dbas_", 2:16))
-bfi_items <- c("reserved", "trusting", "lazy", "relaxed", "few_interests",
-               "outgoing", "find_fault", "thorough", "nervous", "imagination")
+dbas_items  <- c("dbas1", paste0("dbas_", 2:16))
+bfi_items   <- c("reserved", "trusting", "lazy", "relaxed", "few_interests",
+                 "outgoing", "find_fault", "thorough", "nervous", "imagination")
 surps_items <- paste0("surps", 1:23)
-ciss_items <- paste0("ciss", 1:21)
+ciss_items  <- paste0("ciss", 1:21)
 
 cat("✓ Core variable lists defined\n\n")
+
+cat("VARIABLE GROUPS DEFINED:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  Outcome:               1 variable\n")
+cat("  Core demographics:    ", length(core_demographics), "variables\n")
+cat("  Health/clinical:      ", length(health_vars), "variables\n")
+cat("  Length of use:         1 variable (c_lengthofuse)\n")
+cat("  Medication burden:    ", length(med_burden_vars), "variables (separate items, no composite)\n")
+cat("  Sleep aids:           ", length(sleep_aids), "variables\n")
+cat("  Adverse effects:      ", length(c(side_effects_items, safety_items,
+                                          adl_items, dependence_items)), "variables\n")
+cat("  Withdrawal:            2 variables (combined + count)\n")
+cat("  Stop rate:             1 variable\n")
+cat("  COM-B:                ", length(comb_vars), "variables\n")
+cat("  BMQ Necessity items:  ", length(bmq_items), "raw items (composite deferred to Chunk 9)\n")
+cat("  Reasons (stop/would):", length(reasons_vars), "variables\n")
+cat("  DBAS items:            16\n")
+cat("  BFI items:             10\n")
+cat("  SURPS items:           23\n")
+cat("  CISS items:            21\n\n")
 
 # -----------------------------------------------------------------------------
 # PART B: RECODE SLEEP AID FREQUENCY VARIABLES (NA → 0)
@@ -1565,25 +1691,23 @@ existing_freq_vars <- sleep_aids[sleep_aids %in% names(SIMOA)]
 if(length(existing_freq_vars) > 0) {
   cat("Before recoding - Missingness summary:\n")
   for(var in existing_freq_vars) {
-    n_na <- sum(is.na(SIMOA[[var]]))
+    n_na   <- sum(is.na(SIMOA[[var]]))
     pct_na <- round(100 * n_na / nrow(SIMOA), 1)
     cat(sprintf("  %-20s: %3d NAs (%5.1f%%)\n", var, n_na, pct_na))
   }
   cat("\nRecoding NA → 0 (never uses)...\n\n")
-  
   for(var in existing_freq_vars) {
     SIMOA[[var]][is.na(SIMOA[[var]])] <- 0
   }
-  
   cat("After recoding - Distribution:\n")
   for(var in existing_freq_vars) {
-    n_0 <- sum(SIMOA[[var]] == 0)
-    n_use <- sum(SIMOA[[var]] > 0)
+    n_0     <- sum(SIMOA[[var]] == 0)
+    n_use   <- sum(SIMOA[[var]] > 0)
     pct_use <- round(100 * n_use / nrow(SIMOA), 1)
-    cat(sprintf("  %-20s: Never=%3d, Uses=%3d (%5.1f%%)\n", 
+    cat(sprintf("  %-20s: Never=%3d, Uses=%3d (%5.1f%%)\n",
                 var, n_0, n_use, pct_use))
   }
-  cat("\n✓ Sleep aid variables recoded to ordinal (0-4)\n\n")
+  cat("\n✓ Sleep aid variables recoded to ordinal (0–4)\n\n")
 } else {
   cat("⚠️  No sleep aid frequency variables found\n\n")
 }
@@ -1596,14 +1720,12 @@ cat("═════════════════════════
 cat("PART C: CREATING HEALTH CONDITION COUNT VARIABLES\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Check if checkbox variables exist
-sleep_conditions_exist <- any(grepl("^sleep_health_con___", names(SIMOA)))
-physical_conditions_exist <- any(grepl("^phys_health_con___", names(SIMOA)))
-mental_conditions_exist <- any(grepl("^ment_health_con___", names(SIMOA)))
+sleep_conditions_exist    <- any(grepl("^sleep_health_con___",  names(SIMOA)))
+physical_conditions_exist <- any(grepl("^phys_health_con___",   names(SIMOA)))
+mental_conditions_exist   <- any(grepl("^ment_health_con___",   names(SIMOA)))
 
 if(sleep_conditions_exist || physical_conditions_exist || mental_conditions_exist) {
   
-  # Physical conditions
   if(physical_conditions_exist) {
     phys_cols <- grep("^phys_health_con___", names(SIMOA), value = TRUE)
     phys_cols <- phys_cols[!phys_cols %in% "phys_health_con___0"]
@@ -1614,7 +1736,6 @@ if(sleep_conditions_exist || physical_conditions_exist || mental_conditions_exis
     cat("  n_physical_conditions: No checkboxes found, set to 0\n")
   }
   
-  # Mental conditions
   if(mental_conditions_exist) {
     ment_cols <- grep("^ment_health_con___", names(SIMOA), value = TRUE)
     ment_cols <- ment_cols[!ment_cols %in% "ment_health_con___0"]
@@ -1625,7 +1746,6 @@ if(sleep_conditions_exist || physical_conditions_exist || mental_conditions_exis
     cat("  n_ment_conditions: No checkboxes found, set to 0\n")
   }
   
-  # Sleep conditions
   if(sleep_conditions_exist) {
     sleep_cols <- grep("^sleep_health_con___", names(SIMOA), value = TRUE)
     sleep_cols <- sleep_cols[!sleep_cols %in% "sleep_health_con___0"]
@@ -1636,37 +1756,31 @@ if(sleep_conditions_exist || physical_conditions_exist || mental_conditions_exis
     cat("  n_sleep_conditions: No checkboxes found, set to 0\n")
   }
   
-  # Total health conditions
-  SIMOA$n_health_conditions <- SIMOA$n_physical_conditions + 
-                                SIMOA$n_ment_conditions + 
+  SIMOA$n_health_conditions <- SIMOA$n_physical_conditions +
+                                SIMOA$n_ment_conditions +
                                 SIMOA$n_sleep_conditions
   cat("✓ Created n_health_conditions (total)\n\n")
   
-  # Summary statistics
   cat("Count variable summary:\n")
-  cat("  n_physical_conditions: Mean =", round(mean(SIMOA$n_physical_conditions, na.rm = TRUE), 2),
-      ", Range = [", min(SIMOA$n_physical_conditions, na.rm = TRUE), "-",
-      max(SIMOA$n_physical_conditions, na.rm = TRUE), "]\n", sep = "")
-  cat("  n_ment_conditions: Mean =", round(mean(SIMOA$n_ment_conditions, na.rm = TRUE), 2),
-      ", Range = [", min(SIMOA$n_ment_conditions, na.rm = TRUE), "-",
-      max(SIMOA$n_ment_conditions, na.rm = TRUE), "]\n", sep = "")
-  cat("  n_sleep_conditions: Mean =", round(mean(SIMOA$n_sleep_conditions, na.rm = TRUE), 2),
-      ", Range = [", min(SIMOA$n_sleep_conditions, na.rm = TRUE), "-",
-      max(SIMOA$n_sleep_conditions, na.rm = TRUE), "]\n", sep = "")
-  cat("  n_health_conditions: Mean =", round(mean(SIMOA$n_health_conditions, na.rm = TRUE), 2),
-      ", Range = [", min(SIMOA$n_health_conditions, na.rm = TRUE), "-",
-      max(SIMOA$n_health_conditions, na.rm = TRUE), "]\n\n", sep = "")
+  for(cv in c("n_physical_conditions", "n_ment_conditions",
+              "n_sleep_conditions", "n_health_conditions")) {
+    cat(sprintf("  %-25s: Mean=%.2f, Range=[%d–%d]\n",
+                cv,
+                mean(SIMOA[[cv]], na.rm = TRUE),
+                min(SIMOA[[cv]], na.rm = TRUE),
+                max(SIMOA[[cv]], na.rm = TRUE)))
+  }
+  cat("\n")
   
 } else {
-  cat("⚠️  No checkbox variables found in data\n")
-  cat("   Setting all count variables to 0\n\n")
+  cat("⚠️  No checkbox variables found - setting count variables to 0\n\n")
   SIMOA$n_physical_conditions <- 0
-  SIMOA$n_ment_conditions <- 0
-  SIMOA$n_sleep_conditions <- 0
-  SIMOA$n_health_conditions <- 0
+  SIMOA$n_ment_conditions     <- 0
+  SIMOA$n_sleep_conditions    <- 0
+  SIMOA$n_health_conditions   <- 0
 }
 
-condition_counts <- c("n_health_conditions", "n_physical_conditions", 
+condition_counts <- c("n_health_conditions", "n_physical_conditions",
                       "n_ment_conditions", "n_sleep_conditions")
 
 # -----------------------------------------------------------------------------
@@ -1677,12 +1791,10 @@ cat("═════════════════════════
 cat("PART D: PROCESSING GEN_HEALTH VARIABLE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Check if gen_health exists in different formats
 if("gen_health" %in% names(SIMOA)) {
   cat("✓ gen_health variable exists in dataset\n")
   cat("  Current class:", class(SIMOA$gen_health)[1], "\n")
   
-  # Ensure it's an ordered factor with correct levels
   if(!is.ordered(SIMOA$gen_health)) {
     cat("  Converting to ordered factor...\n")
     SIMOA$gen_health <- factor(SIMOA$gen_health,
@@ -1690,168 +1802,223 @@ if("gen_health" %in% names(SIMOA)) {
                                 labels = c("Poor", "Fair", "Good", "Very good", "Excellent"),
                                 ordered = TRUE)
   }
-  
   cat("\ngen_health distribution:\n")
   print(table(SIMOA$gen_health, useNA = "ifany"))
   cat("\n")
   
 } else if(any(grepl("^gen_health___", names(SIMOA)))) {
-  cat("⚠️  gen_health not found as single variable\n")
-  cat("   Found checkbox format - converting...\n")
-  
-  # Create from checkboxes
+  cat("⚠️  gen_health not found as single variable — converting from checkboxes...\n")
   gh_cols <- paste0("gen_health___", 1:5)
   gh_cols <- gh_cols[gh_cols %in% names(SIMOA)]
   
   if(length(gh_cols) > 0) {
-    # Find which checkbox is selected
     SIMOA$gen_health <- apply(SIMOA[, gh_cols], 1, function(x) {
       which_checked <- which(x == 1)
       if(length(which_checked) == 1) return(which_checked)
       return(NA)
     })
-    
     SIMOA$gen_health <- factor(SIMOA$gen_health,
                                 levels = 1:5,
                                 labels = c("Poor", "Fair", "Good", "Very good", "Excellent"),
                                 ordered = TRUE)
-    
-    cat("✓ Created gen_health from", length(gh_cols), "checkboxes\n")
-    cat("\ngen_health distribution:\n")
+    cat("✓ Created gen_health from", length(gh_cols), "checkboxes\n\n")
     print(table(SIMOA$gen_health, useNA = "ifany"))
     cat("\n")
   }
-  
 } else {
-  cat("⚠️  gen_health variable not found in any format\n")
-  cat("   This variable will not be available for analysis\n\n")
+  cat("⚠️  gen_health not found in any format\n\n")
 }
 
 # -----------------------------------------------------------------------------
-# PART E: REVERSE CODE PERSONALITY ITEMS
+# PART E: PROCESS NEW CLINICAL VARIABLES
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART E: REVERSE CODING PERSONALITY ITEMS\n")
+cat("PART E: PROCESSING NEW CLINICAL VARIABLES\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
+# ── E1. Length of BZRA Use ────────────────────────────────────────────────────
+cat("E1. Length of BZRA Use (c_lengthofuse)\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  Estimated total years taking sleep medications (range: 0.1–100).\n\n")
+
+if("c_lengthofuse" %in% names(SIMOA)) {
+  SIMOA$c_lengthofuse <- as.numeric(SIMOA$c_lengthofuse)
+  n_complete <- sum(!is.na(SIMOA$c_lengthofuse))
+  n_missing  <- sum( is.na(SIMOA$c_lengthofuse))
+  cat(sprintf("  ✓ c_lengthofuse present | n complete=%d | n missing=%d\n",
+              n_complete, n_missing))
+  cat(sprintf("  Mean (SD):  %.2f (%.2f) years\n",
+              mean(SIMOA$c_lengthofuse, na.rm = TRUE),
+              sd(SIMOA$c_lengthofuse,   na.rm = TRUE)))
+  cat(sprintf("  Median:     %.1f years\n",
+              median(SIMOA$c_lengthofuse, na.rm = TRUE)))
+  cat(sprintf("  Range:      %.1f to %.1f years\n",
+              min(SIMOA$c_lengthofuse, na.rm = TRUE),
+              max(SIMOA$c_lengthofuse, na.rm = TRUE)))
+  n_low  <- sum(SIMOA$c_lengthofuse <  0.1, na.rm = TRUE)
+  n_high <- sum(SIMOA$c_lengthofuse > 100,  na.rm = TRUE)
+  if(n_low  > 0) cat(sprintf("  ⚠️  %d values below minimum (0.1)\n", n_low))
+  if(n_high > 0) cat(sprintf("  ⚠️  %d values above maximum (100)\n", n_high))
+} else {
+  cat("  ⚠️  c_lengthofuse NOT FOUND in dataset\n")
+}
+cat("\n")
+
+# ── E2. Medication Burden (4 separate items) ──────────────────────────────────
+cat("E2. Medication Burden (4 separate items — NOT composited)\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  NOTE: Each item retained separately — they ask conceptually\n")
+cat("        distinct questions and should not be combined.\n\n")
+
+med_burden_labels <- c(
+  "I take too many medications",
+  "I am comfortable with the amount of medications I take",
+  "I would like to decrease the overall number of medications I take",
+  "All my medications have an important purpose for my health"
+)
+
+for(i in seq_along(med_burden_vars)) {
+  var <- med_burden_vars[i]
+  if(var %in% names(SIMOA)) {
+    SIMOA[[var]] <- as.numeric(SIMOA[[var]])
+    n_complete   <- sum(!is.na(SIMOA[[var]]))
+    n_missing    <- sum( is.na(SIMOA[[var]]))
+    m_val        <- round(mean(SIMOA[[var]], na.rm = TRUE), 2)
+    cat(sprintf("  ✓ %-15s | complete=%d | missing=%d | Mean=%.2f\n",
+                var, n_complete, n_missing, m_val))
+    cat(sprintf("    \"%s\"\n", med_burden_labels[i]))
+  } else {
+    cat(sprintf("  ⚠️  %-15s | NOT FOUND in dataset\n", var))
+  }
+}
+cat("\n")
+
+# ── E3. Stop Rate ─────────────────────────────────────────────────────────────
+cat("E3. Stop Rate (stop_rate_dc)\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  0=Abruptly, 1=Slowly (1-4 wks), 2=Very slowly (>4 wks)\n\n")
+
+if("stop_rate_dc" %in% names(SIMOA)) {
+  cat("  ✓ stop_rate_dc present\n")
+  print(table(SIMOA$stop_rate_dc, useNA = "ifany"))
+} else {
+  cat("  ⚠️  stop_rate_dc NOT FOUND in dataset\n")
+}
+cat("\n")
+
+# ── E4. BMQ Necessity raw items ───────────────────────────────────────────────
+cat("E4. BMQ Necessity raw items\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  NOTE: BMQ_necessity composite deferred to Chunk 9\n")
+cat("        (post-imputation to avoid imputing a derived variable).\n\n")
+
+for(var in bmq_items) {
+  if(var %in% names(SIMOA)) {
+    SIMOA[[var]] <- as.numeric(SIMOA[[var]])
+    cat(sprintf("  ✓ %-15s | complete=%d | missing=%d | Mean=%.2f\n",
+                var,
+                sum(!is.na(SIMOA[[var]])),
+                sum( is.na(SIMOA[[var]])),
+                mean(SIMOA[[var]], na.rm = TRUE)))
+  } else {
+    cat(sprintf("  ⚠️  %-15s | NOT FOUND\n", var))
+  }
+}
+cat("\n")
+
+# ── E5. Reasons for stopping / would stop ─────────────────────────────────────
+cat("E5. Reasons for Stopping / Would Stop (17 items)\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  Scale: 1=Strongly Disagree to 5=Strongly Agree\n\n")
+
+reasons_found   <- reasons_vars[reasons_vars %in% names(SIMOA)]
+reasons_missing <- reasons_vars[!reasons_vars %in% names(SIMOA)]
+
+for(var in reasons_found) {
+  SIMOA[[var]] <- as.numeric(SIMOA[[var]])
+  cat(sprintf("  ✓ %-15s | complete=%d | Mean=%.2f\n",
+              var,
+              sum(!is.na(SIMOA[[var]])),
+              mean(SIMOA[[var]], na.rm = TRUE)))
+}
+if(length(reasons_missing) > 0) {
+  cat("\n  ⚠️  Not found:", paste(reasons_missing, collapse = ", "), "\n")
+}
+cat("\n")
+
 # -----------------------------------------------------------------------------
-# E1. BFI Reverse Coding
+# PART F: REVERSE CODE PERSONALITY ITEMS
 # -----------------------------------------------------------------------------
 
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART F: REVERSE CODING PERSONALITY ITEMS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+# ── F1. BFI ───────────────────────────────────────────────────────────────────
 cat("BFI Reverse Coding:\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("Based on BFI-10 scoring:\n")
 cat("  Extraversion: reserved (R), outgoing\n")
 cat("  Agreeableness: trusting, find_fault (R)\n")
 cat("  Conscientiousness: lazy (R), thorough\n")
 cat("  Neuroticism: relaxed (R), nervous\n")
 cat("  Openness: few_interests (R), imagination\n\n")
 
-# BFI items to reverse (5 items)
 bfi_reverse <- c("reserved", "lazy", "relaxed", "few_interests", "find_fault")
 
 cat("Items to reverse (5-point scale: 1↔5, 2↔4, 3↔3):\n")
 for(item in bfi_reverse) {
   if(item %in% names(SIMOA)) {
-    cat("  •", item, "\n")
+    SIMOA[[item]] <- 6 - as.numeric(SIMOA[[item]])
+    cat(sprintf("  ✓ Reversed: %s\n", item))
+  } else {
+    cat(sprintf("  ⚠️  Not found: %s\n", item))
   }
 }
 cat("\n")
 
-# Reverse code BFI items
-if(any(bfi_reverse %in% names(SIMOA))) {
-  for(item in bfi_reverse) {
-    if(item %in% names(SIMOA)) {
-      SIMOA[[item]] <- 6 - SIMOA[[item]]
-    }
-  }
-  cat("✓ Reverse coded", sum(bfi_reverse %in% names(SIMOA)), "BFI items\n\n")
-} else {
-  cat("⚠️  No BFI items found to reverse code\n\n")
-}
-
-# -----------------------------------------------------------------------------
-# E2. SURPS Reverse Coding
-# -----------------------------------------------------------------------------
-
+# ── F2. SURPS ─────────────────────────────────────────────────────────────────
 cat("SURPS Reverse Coding:\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("Hopelessness subscale items (reversed):\n")
-cat("  surps1:  'I am content'\n")
-cat("  surps4:  'I am happy'\n")
-cat("  surps7:  'I have faith that my future holds great promise'\n")
-cat("  surps13: 'I feel proud of my accomplishments'\n")
-cat("  surps20: 'I feel pleasant'\n")
-cat("  surps23: 'I am very enthusiastic about my future'\n")
-cat("  NOTE: surps17 ('I feel that I'm a failure') is NOT reversed\n\n")
+cat("  Hopelessness subscale positive-valence items reversed.\n")
+cat("  NOTE: surps17 ('I feel that I'm a failure') is NOT reversed.\n\n")
 
-# SURPS items to reverse (6 items - NOT surps17)
 surps_reverse <- c("surps1", "surps4", "surps7", "surps13", "surps20", "surps23")
 
 cat("Items to reverse (4-point scale: 1↔4, 2↔3):\n")
 for(item in surps_reverse) {
   if(item %in% names(SIMOA)) {
-    cat("  •", item, "\n")
+    SIMOA[[item]] <- 5 - as.numeric(SIMOA[[item]])
+    cat(sprintf("  ✓ Reversed: %s\n", item))
+  } else {
+    cat(sprintf("  ⚠️  Not found: %s\n", item))
   }
 }
 cat("\n")
 
-# Reverse code SURPS items
-if(any(surps_reverse %in% names(SIMOA))) {
-  for(item in surps_reverse) {
-    if(item %in% names(SIMOA)) {
-      SIMOA[[item]] <- 5 - SIMOA[[item]]
-    }
-  }
-  cat("✓ Reverse coded", sum(surps_reverse %in% names(SIMOA)), "SURPS items\n\n")
-} else {
-  cat("⚠️  No SURPS items found to reverse code\n\n")
-}
-
-# -----------------------------------------------------------------------------
-# E3. DBAS - No Reverse Coding
-# -----------------------------------------------------------------------------
-
-cat("DBAS Coding:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-cat("DBAS-16 does NOT require reverse coding.\n")
-cat("All items scored in same direction (higher = more dysfunctional beliefs).\n")
-cat("✓ No DBAS reverse coding needed\n\n")
-
-# -----------------------------------------------------------------------------
-# E4. CISS - No Reverse Coding
-# -----------------------------------------------------------------------------
-
-cat("CISS Coding:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-cat("CISS-21 does NOT require reverse coding.\n")
-cat("All items scored in same direction within subscales.\n")
-cat("✓ No CISS reverse coding needed\n\n")
-
-# -----------------------------------------------------------------------------
-# Summary
-# -----------------------------------------------------------------------------
+cat("DBAS: No reverse coding needed (all items same direction)\n")
+cat("CISS: No reverse coding needed (all items same direction)\n\n")
 
 cat("REVERSE CODING SUMMARY:\n")
-cat("  BFI:", sum(bfi_reverse %in% names(SIMOA)), "items reverse coded\n")
-cat("  SURPS:", sum(surps_reverse %in% names(SIMOA)), "items reverse coded\n")
-cat("  DBAS: 0 items (not needed)\n")
-cat("  CISS: 0 items (not needed)\n\n")
+cat(sprintf("  BFI:   %d items reverse coded\n", sum(bfi_reverse   %in% names(SIMOA))))
+cat(sprintf("  SURPS: %d items reverse coded\n", sum(surps_reverse %in% names(SIMOA))))
+cat("  DBAS:  0 items (not needed)\n")
+cat("  CISS:  0 items (not needed)\n\n")
 
 # -----------------------------------------------------------------------------
-# PART F: SELECT FINAL VARIABLES
+# PART G: SELECT FINAL VARIABLES
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART F: SELECTING FINAL VARIABLES FOR ANALYSIS\n")
+cat("PART G: SELECTING FINAL VARIABLES FOR ANALYSIS\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Compile all variables
 all_vars_to_keep <- c(
   outcome,
   core_demographics,
   health_vars,
+  length_of_use,
+  med_burden_vars,
   condition_counts,
   sleep_aids,
   side_effects_items,
@@ -1860,94 +2027,163 @@ all_vars_to_keep <- c(
   dependence_items,
   withdrawal_combined,
   withdrawal_count,
+  stop_rate_var,
   comb_vars,
+  bmq_items,
+  reasons_vars,
   dbas_items,
   bfi_items,
   surps_items,
   ciss_items
 )
 
-# Check which exist
 vars_available <- all_vars_to_keep[all_vars_to_keep %in% names(SIMOA)]
-vars_missing <- all_vars_to_keep[!all_vars_to_keep %in% names(SIMOA)]
+vars_missing   <- all_vars_to_keep[!all_vars_to_keep %in% names(SIMOA)]
 
-# Create analysis dataset
 SIMOA_analysis <- SIMOA %>% select(all_of(vars_available))
 
 cat("VARIABLE SELECTION SUMMARY:\n")
 cat("─────────────────────────────────────────────────────────────\n")
 cat("  Requested:", length(all_vars_to_keep), "variables\n")
-cat("  Available:", length(vars_available), "variables\n")
-cat("  Missing:", length(vars_missing), "variables\n\n")
+cat("  Available:", length(vars_available),    "variables\n")
+cat("  Missing:  ", length(vars_missing),      "variables\n\n")
 
-if(length(vars_missing) > 0 && length(vars_missing) <= 20) {
+if(length(vars_missing) > 0) {
   cat("Missing variables:\n")
-  for(v in vars_missing) {
-    cat("  •", v, "\n")
-  }
+  for(v in vars_missing) cat("  •", v, "\n")
   cat("\n")
-} else if(length(vars_missing) > 20) {
-  cat("Missing variables (showing first 20):\n")
-  for(v in head(vars_missing, 20)) {
-    cat("  •", v, "\n")
-  }
-  cat("  ... and", length(vars_missing) - 20, "more\n\n")
 }
 
 cat("VARIABLE BREAKDOWN:\n")
-cat("  Outcome:", sum(outcome %in% names(SIMOA_analysis)), "/1\n")
-cat("  Demographics:", sum(core_demographics %in% names(SIMOA_analysis)), "/", 
-    length(core_demographics), "\n")
-cat("  Health variables:", sum(health_vars %in% names(SIMOA_analysis)), "/", 
-    length(health_vars), "\n")
-cat("  Condition counts:", sum(condition_counts %in% names(SIMOA_analysis)), "/", 
-    length(condition_counts), "\n")
-cat("  Sleep aids:", sum(sleep_aids %in% names(SIMOA_analysis)), "/", 
-    length(sleep_aids), "\n")
-cat("  Adverse effects:", 
-    sum(c(side_effects_items, safety_items, adl_items, dependence_items) %in% names(SIMOA_analysis)), 
-    "/13\n")
-cat("  Withdrawal:", sum(c(withdrawal_combined, withdrawal_count) %in% names(SIMOA_analysis)), "/2\n")
-cat("  COM-B:", sum(comb_vars %in% names(SIMOA_analysis)), "/", length(comb_vars), "\n")
-cat("  DBAS:", sum(dbas_items %in% names(SIMOA_analysis)), "/16\n")
-cat("  BFI:", sum(bfi_items %in% names(SIMOA_analysis)), "/10\n")
-cat("  SURPS:", sum(surps_items %in% names(SIMOA_analysis)), "/23\n")
-cat("  CISS:", sum(ciss_items %in% names(SIMOA_analysis)), "/21\n\n")
-
-cat("✓ Created SIMOA_analysis with", ncol(SIMOA_analysis), "variables\n\n")
+cat(sprintf("  Outcome:                    %d / 1\n",
+            sum(outcome %in% names(SIMOA_analysis))))
+cat(sprintf("  Core demographics:          %d / %d\n",
+            sum(core_demographics %in% names(SIMOA_analysis)), length(core_demographics)))
+cat(sprintf("  Health/clinical:            %d / %d\n",
+            sum(health_vars %in% names(SIMOA_analysis)), length(health_vars)))
+cat(sprintf("  Length of use:              %d / 1\n",
+            sum(length_of_use %in% names(SIMOA_analysis))))
+cat(sprintf("  Medication burden (items):  %d / %d\n",
+            sum(med_burden_vars %in% names(SIMOA_analysis)), length(med_burden_vars)))
+cat(sprintf("  Condition counts:           %d / %d\n",
+            sum(condition_counts %in% names(SIMOA_analysis)), length(condition_counts)))
+cat(sprintf("  Sleep aids:                 %d / %d\n",
+            sum(sleep_aids %in% names(SIMOA_analysis)), length(sleep_aids)))
+cat(sprintf("  Adverse effects:            %d / 13\n",
+            sum(c(side_effects_items, safety_items,
+                  adl_items, dependence_items) %in% names(SIMOA_analysis))))
+cat(sprintf("  Withdrawal:                 %d / 2\n",
+            sum(c(withdrawal_combined, withdrawal_count) %in% names(SIMOA_analysis))))
+cat(sprintf("  Stop rate:                  %d / 1\n",
+            sum(stop_rate_var %in% names(SIMOA_analysis))))
+cat(sprintf("  COM-B:                      %d / %d\n",
+            sum(comb_vars %in% names(SIMOA_analysis)), length(comb_vars)))
+cat(sprintf("  BMQ Necessity raw items:    %d / %d\n",
+            sum(bmq_items %in% names(SIMOA_analysis)), length(bmq_items)))
+cat(sprintf("  Reasons (stop / would):     %d / %d\n",
+            sum(reasons_vars %in% names(SIMOA_analysis)), length(reasons_vars)))
+cat(sprintf("  DBAS items:                 %d / 16\n",
+            sum(dbas_items %in% names(SIMOA_analysis))))
+cat(sprintf("  BFI items:                  %d / 10\n",
+            sum(bfi_items %in% names(SIMOA_analysis))))
+cat(sprintf("  SURPS items:                %d / 23\n",
+            sum(surps_items %in% names(SIMOA_analysis))))
+cat(sprintf("  CISS items:                 %d / 21\n",
+            sum(ciss_items %in% names(SIMOA_analysis))))
+cat(sprintf("\n  TOTAL in SIMOA_analysis:    %d variables × %d observations\n\n",
+            ncol(SIMOA_analysis), nrow(SIMOA_analysis)))
 
 # -----------------------------------------------------------------------------
-# PART G: SAVE PREPARED DATASET
+# PART H: FULL VARIABLE INVENTORY
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART G: SAVING PREPARED DATASET\n")
+cat("PART H: FULL VARIABLE INVENTORY\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Save analysis dataset
+cat(sprintf("Total variables in SIMOA_analysis: %d\n",   ncol(SIMOA_analysis)))
+cat(sprintf("Total observations:                %d\n\n", nrow(SIMOA_analysis)))
+
+var_inventory <- data.frame(
+  Variable    = names(SIMOA_analysis),
+  Class       = sapply(SIMOA_analysis, function(x) paste(class(x), collapse = "/")),
+  N_Complete  = sapply(SIMOA_analysis, function(x) sum(!is.na(x))),
+  N_Missing   = sapply(SIMOA_analysis, function(x) sum(is.na(x))),
+  Pct_Missing = round(sapply(SIMOA_analysis, function(x) 100 * mean(is.na(x))), 1),
+  stringsAsFactors = FALSE
+)
+
+var_inventory$Domain <- case_when(
+  var_inventory$Variable == "scrn_stopped_bzra"                        ~ "OUTCOME",
+  var_inventory$Variable %in% core_demographics                        ~ "Demographics",
+  var_inventory$Variable %in% health_vars                              ~ "Clinical: Health",
+  var_inventory$Variable == "c_lengthofuse"                            ~ "Clinical: Length of Use",
+  var_inventory$Variable %in% med_burden_vars                          ~ "Clinical: Medication Burden",
+  var_inventory$Variable %in% condition_counts                         ~ "Clinical: Condition Counts",
+  var_inventory$Variable %in% sleep_aids                               ~ "Behavioural: Sleep Aids",
+  var_inventory$Variable %in% c(side_effects_items, safety_items,
+                                 adl_items, dependence_items)          ~ "Clinical: Adverse Effects",
+  var_inventory$Variable %in% c(withdrawal_combined, withdrawal_count) ~ "Clinical: Withdrawal",
+  var_inventory$Variable == stop_rate_var                              ~ "Clinical: Stop Rate",
+  var_inventory$Variable %in% comb_vars                               ~ "Behavioural: COM-B",
+  var_inventory$Variable %in% bmq_items                               ~ "Clinical: BMQ Necessity (raw items)",
+  var_inventory$Variable %in% reasons_vars                            ~ "Behavioural: Reasons",
+  var_inventory$Variable %in% dbas_items                              ~ "Personality: DBAS",
+  var_inventory$Variable %in% bfi_items                               ~ "Personality: BFI",
+  var_inventory$Variable %in% surps_items                             ~ "Personality: SURPS",
+  var_inventory$Variable %in% ciss_items                              ~ "Personality: CISS",
+  TRUE                                                                 ~ "Other"
+)
+
+for(dom in sort(unique(var_inventory$Domain))) {
+  sub_df <- var_inventory[var_inventory$Domain == dom, ]
+  cat(sprintf("── %s (%d variable%s) ──\n",
+              dom, nrow(sub_df), ifelse(nrow(sub_df) == 1, "", "s")))
+  print(sub_df[, c("Variable", "Class", "N_Complete", "N_Missing", "Pct_Missing")],
+        row.names = FALSE)
+  cat("\n")
+}
+
+write.csv(var_inventory, "variable_inventory.csv", row.names = FALSE)
+cat("✓ Saved: variable_inventory.csv\n\n")
+
+# -----------------------------------------------------------------------------
+# PART I: SAVE PREPARED DATASET
+# -----------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART I: SAVING PREPARED DATASET\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
 saveRDS(SIMOA_analysis, "SIMOA_analysis.rds")
 cat("✓ Saved: SIMOA_analysis.rds\n\n")
 
-# Save variable lists
 analysis_variables <- list(
-  outcome = outcome,
-  demographics = core_demographics[core_demographics %in% names(SIMOA_analysis)],
-  health = health_vars[health_vars %in% names(SIMOA_analysis)],
+  outcome          = outcome,
+  demographics     = core_demographics[core_demographics %in% names(SIMOA_analysis)],
+  health           = health_vars[health_vars %in% names(SIMOA_analysis)],
+  length_of_use    = length_of_use,
+  med_burden       = med_burden_vars[med_burden_vars %in% names(SIMOA_analysis)],
   condition_counts = condition_counts[condition_counts %in% names(SIMOA_analysis)],
-  sleep_aids = sleep_aids[sleep_aids %in% names(SIMOA_analysis)],
-  adverse_effects = c(side_effects_items, safety_items, adl_items, dependence_items)[
-    c(side_effects_items, safety_items, adl_items, dependence_items) %in% names(SIMOA_analysis)],
-  withdrawal = c(withdrawal_combined, withdrawal_count)[
-    c(withdrawal_combined, withdrawal_count) %in% names(SIMOA_analysis)],
-  comb = comb_vars[comb_vars %in% names(SIMOA_analysis)],
-  dbas = dbas_items[dbas_items %in% names(SIMOA_analysis)],
-  bfi = bfi_items[bfi_items %in% names(SIMOA_analysis)],
-  surps = surps_items[surps_items %in% names(SIMOA_analysis)],
-  ciss = ciss_items[ciss_items %in% names(SIMOA_analysis)],
-  bfi_reversed = bfi_reverse[bfi_reverse %in% names(SIMOA_analysis)],
-  surps_reversed = surps_reverse[surps_reverse %in% names(SIMOA_analysis)],
-  n_observations = nrow(SIMOA_analysis),
-  n_variables = ncol(SIMOA_analysis)
+  sleep_aids       = sleep_aids[sleep_aids %in% names(SIMOA_analysis)],
+  adverse_effects  = c(side_effects_items, safety_items,
+                        adl_items, dependence_items)[
+                        c(side_effects_items, safety_items,
+                          adl_items, dependence_items) %in% names(SIMOA_analysis)],
+  withdrawal       = c(withdrawal_combined, withdrawal_count)[
+                        c(withdrawal_combined, withdrawal_count) %in% names(SIMOA_analysis)],
+  stop_rate        = stop_rate_var,
+  comb             = comb_vars[comb_vars %in% names(SIMOA_analysis)],
+  bmq_items        = bmq_items[bmq_items %in% names(SIMOA_analysis)],
+  reasons          = reasons_vars[reasons_vars %in% names(SIMOA_analysis)],
+  dbas             = dbas_items[dbas_items %in% names(SIMOA_analysis)],
+  bfi              = bfi_items[bfi_items %in% names(SIMOA_analysis)],
+  surps            = surps_items[surps_items %in% names(SIMOA_analysis)],
+  ciss             = ciss_items[ciss_items %in% names(SIMOA_analysis)],
+  bfi_reversed     = bfi_reverse[bfi_reverse %in% names(SIMOA_analysis)],
+  surps_reversed   = surps_reverse[surps_reverse %in% names(SIMOA_analysis)],
+  n_observations   = nrow(SIMOA_analysis),
+  n_variables      = ncol(SIMOA_analysis)
 )
 
 saveRDS(analysis_variables, "analysis_variable_lists.rds")
@@ -1961,13 +2197,19 @@ cat("SUMMARY:\n")
 cat("  • Sleep aids recoded (NA → 0)\n")
 cat("  • Health condition counts created\n")
 cat("  • gen_health processed\n")
+cat("  • c_lengthofuse added (years of BZRA use)\n")
+cat("  • med_burden_1/2/3/4 added as separate items (no composite)\n")
+cat("  • stop_rate_dc added\n")
+cat("  • BMQ Necessity: 5 raw items added (composite deferred to Chunk 9)\n")
+cat("  • 17 reasons for stopping/would stop added\n")
 cat("  • BFI items reverse coded (5 items)\n")
 cat("  • SURPS items reverse coded (6 items)\n")
-cat("  • Final dataset:", nrow(SIMOA_analysis), "obs ×", ncol(SIMOA_analysis), "vars\n")
+cat("  • Full variable inventory saved to variable_inventory.csv\n")
+cat(sprintf("  • Final dataset: %d obs × %d vars\n",
+            nrow(SIMOA_analysis), ncol(SIMOA_analysis)))
 cat("  • Ready for diagnostics (Chunk 7)\n\n")
-
-cat("NEXT STEP: Proceed to diagnostics and validation (Chunk 7)\n\n")
 ```
+
 
 
 
