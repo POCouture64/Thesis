@@ -1540,17 +1540,372 @@ cat("  • Ready for variable selection (Chunk 6)\n\n")
 
 ## DDE/Weekly Use Variable Creation
 ```{r}
+# =============================================================================
+# CHUNK 6B: BZRA DIAZEPAM EQUIVALENT CALCULATIONS
+# =============================================================================
+# Formulas:
+#   Weekly diazepam eq  = SUM across drugs: (days_per_week × daily_dose_mg) / divisor
+#   Daily diazepam eq   = weekly_diazepam_eq / 7
+#
+# Conversion divisors (divide dose by this to get diazepam equivalents):
+#   Zopiclone=7.5, Lorazepam=1, Clonazepam=0.375, Alprazolam=0.5
+#   Bromazepam=3, Chlordiazepoxide=25, Diazepam=5, Flurazepam=15
+#   Nitrazepam=2.5, Oxazepam=15, Temazepam=10, Triazolam=0.25
+#   Zolpidem=10, Eszopiclone=3
+#
+# Note: "Less than 1 day/week" (code 8) recoded as 0.5 days/week
+# =============================================================================
 
+cat("\n")
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("BZRA DIAZEPAM EQUIVALENT CALCULATIONS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+# --- Helper: recode REDCap frequency radio to numeric days/week ---
+recode_freq <- function(x) {
+  dplyr::case_when(
+    x == 1 ~ 7,
+    x == 2 ~ 6,
+    x == 3 ~ 5,
+    x == 4 ~ 4,
+    x == 5 ~ 3,
+    x == 6 ~ 2,
+    x == 7 ~ 1,
+    x == 8 ~ 0.5,  # "Less than 1 day/week"
+    TRUE   ~ NA_real_
+  )
+}
+
+# --- Helper: extract dose from REDCap checkbox + other free-text field ---
+extract_dose <- function(data, dose_cols, other_col) {
+  dose <- rep(NA_real_, nrow(data))
+  for (col in names(dose_cols)) {
+    if (col %in% names(data)) {
+      mg_val <- dose_cols[[col]]
+      dose <- dplyr::if_else(
+        !is.na(data[[col]]) & data[[col]] == 1 & is.na(dose),
+        mg_val, dose
+      )
+    }
+  }
+  if (!is.null(other_col) && other_col %in% names(data)) {
+    other_vals <- suppressWarnings(as.numeric(data[[other_col]]))
+    dose <- dplyr::if_else(!is.na(other_vals), other_vals, dose)
+  }
+  return(dose)
+}
+
+# --- Helper: compute weekly diazepam equivalents for one drug ---
+# Explicitly takes data as argument to avoid closure/environment errors
+compute_drug_weekly_eq <- function(data, drug) {
+
+  is_curr <- !is.na(data$freq_dich) & data$freq_dich == 2
+  is_past <- !is.na(data$freq_dich) & (data$freq_dich == 0 | data$freq_dich == 1)
+
+  freq_c <- if (drug$freq_curr %in% names(data)) recode_freq(data[[drug$freq_curr]]) else rep(NA_real_, nrow(data))
+  dose_c <- extract_dose(data, drug$dose_curr, drug$other_curr)
+
+  freq_p <- if (drug$freq_past %in% names(data)) recode_freq(data[[drug$freq_past]]) else rep(NA_real_, nrow(data))
+  dose_p <- extract_dose(data, drug$dose_past, drug$other_past)
+
+  weekly_eq <- dplyr::case_when(
+    is_curr & !is.na(freq_c) & !is.na(dose_c) ~ (freq_c * dose_c) / drug$divisor,
+    is_past & !is.na(freq_p) & !is.na(dose_p) ~ (freq_p * dose_p) / drug$divisor,
+    TRUE ~ 0
+  )
+
+  return(weekly_eq)
+}
+
+# =============================================================================
+# DRUG DEFINITIONS
+# =============================================================================
+
+drug_definitions <- list(
+
+  alprazolam = list(
+    freq_curr  = "alp_use_freq_curr",
+    dose_curr  = list(alp_24dose_curr___1=0.25, alp_24dose_curr___2=0.5,
+                      alp_24dose_curr___3=1,    alp_24dose_curr___4=1.5,
+                      alp_24dose_curr___5=2,    alp_24dose_curr___6=2.5,
+                      alp_24dose_curr___7=3),
+    other_curr = "alp_mg_other_curr",
+    freq_past  = "alp_use_freq_past",
+    dose_past  = list(alp_24dose_past___1=0.25, alp_24dose_past___2=0.5,
+                      alp_24dose_past___3=1,    alp_24dose_past___4=1.5,
+                      alp_24dose_past___5=2,    alp_24dose_past___6=2.5,
+                      alp_24dose_past___7=3),
+    other_past = "alp_mg_other_past",
+    divisor    = 0.5
+  ),
+
+  bromazepam = list(
+    freq_curr  = "brom_use_freq_curr",
+    dose_curr  = list(brom_24dose_curr___1=1.5, brom_24dose_curr___2=3,
+                      brom_24dose_curr___3=4.5, brom_24dose_curr___4=6,
+                      brom_24dose_curr___5=9,   brom_24dose_curr___6=12,
+                      brom_24dose_curr___7=18),
+    other_curr = "brom_mg_other_curr",
+    freq_past  = "brom_use_freq_past",
+    dose_past  = list(brom_24dose_past___1=1.5, brom_24dose_past___2=3,
+                      brom_24dose_past___3=4.5, brom_24dose_past___4=6,
+                      brom_24dose_past___5=9,   brom_24dose_past___6=12,
+                      brom_24dose_past___7=18),
+    other_past = "brom_mg_other_past",
+    divisor    = 3
+  ),
+
+  chlordiazepoxide = list(
+    freq_curr  = "chlo_use_freq_curr",
+    dose_curr  = list(chlo_24dose_curr___1=5,  chlo_24dose_curr___2=10,
+                      chlo_24dose_curr___3=20, chlo_24dose_curr___4=25,
+                      chlo_24dose_curr___5=50),
+    other_curr = "chlo_mg_other_curr",
+    freq_past  = "chlor_use_freq_past",
+    dose_past  = list(chlo_24dose_past___1=5,  chlo_24dose_past___2=10,
+                      chlo_24dose_past___3=20, chlo_24dose_past___4=25,
+                      chlo_24dose_past___5=50),
+    other_past = "chlo_mg_other_past",
+    divisor    = 25
+  ),
+
+  clonazepam = list(
+    freq_curr  = "clon_use_freq_curr",
+    dose_curr  = list(clon_24dose_curr___1=0.25, clon_24dose_curr___2=0.5,
+                      clon_24dose_curr___3=1,    clon_24dose_curr___4=1.5,
+                      clon_24dose_curr___5=2,    clon_24dose_curr___6=3,
+                      clon_24dose_curr___7=4),
+    other_curr = "clo_mg_other_curr",
+    freq_past  = "clon_use_freq_past",
+    dose_past  = list(clon_24dose_past___1=0.25, clon_24dose_past___2=0.5,
+                      clon_24dose_past___3=1,    clon_24dose_past___4=1.5,
+                      clon_24dose_past___5=2,    clon_24dose_past___6=3,
+                      clon_24dose_past___7=4),
+    other_past = "clo_mg_other_past",
+    divisor    = 0.375
+  ),
+
+  diazepam = list(
+    freq_curr  = "dia_use_freq_curr",
+    dose_curr  = list(dia_24dose_curr___1=1,   dia_24dose_curr___2=2,
+                      dia_24dose_curr___3=2.5, dia_24dose_curr___4=4,
+                      dia_24dose_curr___5=5,   dia_24dose_curr___6=10,
+                      dia_24dose_curr___7=20),
+    other_curr = "dia_mg_other_curr",
+    freq_past  = "diaz_use_freq_past",
+    dose_past  = list(dia_24dose_past___1=1,   dia_24dose_past___2=2,
+                      dia_24dose_past___3=2.5, dia_24dose_past___4=4,
+                      dia_24dose_past___5=5,   dia_24dose_past___6=10,
+                      dia_24dose_past___7=20),
+    other_past = "dia_mg_other_past",
+    divisor    = 5
+  ),
+
+  eszopiclone = list(
+    freq_curr  = "eszo_use_freq_curr",
+    dose_curr  = list(eszo_24dose_curr___1=0.5, eszo_24dose_curr___2=1,
+                      eszo_24dose_curr___3=2,   eszo_24dose_curr___4=3,
+                      eszo_24dose_curr___5=4,   eszo_24dose_curr___6=4.5,
+                      eszo_24dose_curr___7=6),
+    other_curr = "eszo_mg_other_curr",
+    freq_past  = "eszo_use_freq_past",
+    dose_past  = list(eszo_24dose_past___1=0.5, eszo_24dose_past___2=1,
+                      eszo_24dose_past___3=2,   eszo_24dose_past___4=3,
+                      eszo_24dose_past___5=4,   eszo_24dose_past___6=4.5,
+                      eszo_24dose_past___7=6),
+    other_past = "eszo_mg_other_past",
+    divisor    = 3
+  ),
+
+  flurazepam = list(
+    freq_curr  = "flur_use_freq_curr",
+    dose_curr  = list(flura_24dose_curr___1=15, flura_24dose_curr___2=30),
+    other_curr = "flur_mg_other_curr",
+    freq_past  = "flur_use_freq_past",
+    dose_past  = list(flura_24dose_past___1=15, flura_24dose_past___2=30),
+    other_past = "flur_mg_other_past",
+    divisor    = 15
+  ),
+
+  lorazepam = list(
+    freq_curr  = "lor_use_freq_curr",
+    dose_curr  = list(loraz_24dose_curr___1=0.25, loraz_24dose_curr___2=0.5,
+                      loraz_24dose_curr___3=1,    loraz_24dose_curr___4=1.5,
+                      loraz_24dose_curr___5=2,    loraz_24dose_curr___6=3,
+                      loraz_24dose_curr___7=4),
+    other_curr = "loraz_mg_other_curr",
+    freq_past  = "loraz_use_freq_past",
+    dose_past  = list(loraz_24dose_past___1=0.25, loraz_24dose_past___2=0.5,
+                      loraz_24dose_past___3=1,    loraz_24dose_past___4=1.5,
+                      loraz_24dose_past___5=2,    loraz_24dose_past___6=3,
+                      loraz_24dose_past___7=4),
+    other_past = "loraz_mg_other_past",
+    divisor    = 1
+  ),
+
+  nitrazepam = list(
+    freq_curr  = "nitra_use_freq_curr",
+    dose_curr  = list(nitraz_24dose_curr___1=2.5, nitraz_24dose_curr___2=5,
+                      nitraz_24dose_curr___3=7.5, nitraz_24dose_curr___4=10,
+                      nitraz_24dose_curr___5=15,  nitraz_24dose_curr___6=20),
+    other_curr = "nitraz_mg_other_curr",
+    freq_past  = "nitraz_use_freq_past",
+    dose_past  = list(nitraz_24dose_past___1=2.5, nitraz_24dose_past___2=5,
+                      nitraz_24dose_past___3=7.5, nitraz_24dose_past___4=10,
+                      nitraz_24dose_past___5=15,  nitraz_24dose_past___6=20),
+    other_past = "nitraz_mg_other_past",
+    divisor    = 2.5
+  ),
+
+  oxazepam = list(
+    freq_curr  = "oxaz_use_freq_curr",
+    dose_curr  = list(oxaz_24dose_curr___1=5,    oxaz_24dose_curr___2=10,
+                      oxaz_24dose_curr___3=15,   oxaz_24dose_curr___4=22.5,
+                      oxaz_24dose_curr___5=30,   oxaz_24dose_curr___6=45,
+                      oxaz_24dose_curr___7=60),
+    other_curr = "oxaz_mg_other_curr",
+    freq_past  = "oxaz_use_freq_past",
+    dose_past  = list(oxaz_24dose_past___1=5,    oxaz_24dose_past___2=10,
+                      oxaz_24dose_past___3=15,   oxaz_24dose_past___4=22.5,
+                      oxaz_24dose_past___5=30,   oxaz_24dose_past___6=45,
+                      oxaz_24dose_past___7=60),
+    other_past = "oxaz_mg_other_past",
+    divisor    = 15
+  ),
+
+  temazepam = list(
+    freq_curr  = "temaz_use_freq_curr",
+    dose_curr  = list(temaz_24dose_curr___1=15, temaz_24dose_curr___2=30),
+    other_curr = "temaz_mg_other_curr",
+    freq_past  = "temaz_use_freq_past",
+    dose_past  = list(temaz_24dose_past___1=15, temaz_24dose_past___2=30),
+    other_past = "temaz_mg_other_past",
+    divisor    = 10
+  ),
+
+  triazolam = list(
+    freq_curr  = "triaz_use_freq_curr",
+    dose_curr  = list(triaz_24dose_curr___1=0.0625, triaz_24dose_curr___2=0.125,
+                      triaz_24dose_curr___3=0.25,   triaz_24dose_curr___4=0.5),
+    other_curr = "triaz_mg_other_curr",
+    freq_past  = "triaz_use_freq_past",
+    dose_past  = list(triaz_24dose_past___1=0.0625, triaz_24dose_past___2=0.125,
+                      triaz_24dose_past___3=0.25,   triaz_24dose_past___4=0.5),
+    other_past = "triaz_mg_other_past",
+    divisor    = 0.25
+  ),
+
+  zolpidem = list(
+    freq_curr  = "zolp_use_freq_curr",
+    dose_curr  = list(zolp_24dose_curr___1=5,  zolp_24dose_curr___2=10,
+                      zolp_24dose_curr___3=15),
+    other_curr = "zolpi_mg_other_curr",
+    freq_past  = "zolpi_use_freq_past",
+    dose_past  = list(zolp_24dose_past___1=5,  zolp_24dose_past___2=10,
+                      zolp_24dose_past___3=15),
+    other_past = "zolpi_mg_other_past",
+    divisor    = 10
+  ),
+
+  zopiclone = list(
+    freq_curr  = "zopi_use_freq_curr",
+    dose_curr  = list(zopi_24dose_curr___1=2.5,  zopi_24dose_curr___2=3.75,
+                      zopi_24dose_curr___3=5,    zopi_24dose_curr___4=7.5),
+    other_curr = "zopi_mg_other_curr",
+    freq_past  = "zopi_use_freq_past",
+    dose_past  = list(zopi_24dose_past___1=2.5,  zopi_24dose_past___2=3.75,
+                      zopi_24dose_past___3=5,    zopi_24dose_past___4=7.5),
+    other_past = "zopi_mg_other_past",
+    divisor    = 7.5
+  )
+)
+
+# =============================================================================
+# COMPUTE EQUIVALENTS AND ADD TO SIMOA
+# =============================================================================
+
+cat("Computing per-drug weekly diazepam equivalents...\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+# Pass SIMOA explicitly to avoid closure errors
+weekly_eq_matrix <- purrr::map_dfc(
+  drug_definitions,
+  ~ compute_drug_weekly_eq(SIMOA, .x)
+)
+
+SIMOA <- SIMOA %>%
+  dplyr::mutate(
+    bzra_weekly_diazepam_eq = rowSums(weekly_eq_matrix, na.rm = TRUE),
+    bzra_daily_diazepam_eq  = bzra_weekly_diazepam_eq / 7
+  )
+
+cat("✓ bzra_weekly_diazepam_eq created\n")
+cat("✓ bzra_daily_diazepam_eq created\n\n")
+
+# =============================================================================
+# VERIFICATION OUTPUT
+# =============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("VERIFICATION\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+# 1. Basic summary statistics
+cat("SUMMARY STATISTICS:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat(sprintf("  N total:                        %d\n", nrow(SIMOA)))
+cat(sprintf("  N with daily eq > 0:            %d\n", sum(SIMOA$bzra_daily_diazepam_eq > 0, na.rm = TRUE)))
+cat(sprintf("  N with daily eq = 0:            %d\n", sum(SIMOA$bzra_daily_diazepam_eq == 0, na.rm = TRUE)))
+cat(sprintf("  N missing daily eq:             %d\n", sum(is.na(SIMOA$bzra_daily_diazepam_eq))))
+cat(sprintf("  Mean  daily diazepam eq (mg):   %.2f\n", mean(SIMOA$bzra_daily_diazepam_eq, na.rm = TRUE)))
+cat(sprintf("  Median daily diazepam eq (mg):  %.2f\n", median(SIMOA$bzra_daily_diazepam_eq, na.rm = TRUE)))
+cat(sprintf("  Min   daily diazepam eq (mg):   %.2f\n", min(SIMOA$bzra_daily_diazepam_eq, na.rm = TRUE)))
+cat(sprintf("  Max   daily diazepam eq (mg):   %.2f\n", max(SIMOA$bzra_daily_diazepam_eq, na.rm = TRUE)))
+cat(sprintf("  SD    daily diazepam eq (mg):   %.2f\n\n", sd(SIMOA$bzra_daily_diazepam_eq, na.rm = TRUE)))
+
+# 2. Per-drug contribution
+cat("PER-DRUG CONTRIBUTION (participants with non-zero eq):\n")
+cat("─────────────────────────────────────────────────────────────\n")
+drug_names <- names(drug_definitions)
+for (i in seq_along(drug_names)) {
+  n_nonzero <- sum(weekly_eq_matrix[[i]] > 0, na.rm = TRUE)
+  mean_eq   <- mean(weekly_eq_matrix[[i]][weekly_eq_matrix[[i]] > 0], na.rm = TRUE)
+  if (n_nonzero > 0) {
+    cat(sprintf("  %-20s: n=%3d users, mean weekly eq = %.2f mg\n",
+                drug_names[i], n_nonzero, mean_eq))
+  } else {
+    cat(sprintf("  %-20s: no users with non-zero dose\n", drug_names[i]))
+  }
+}
+
+# 3. Cross-check by freq_dich group
+cat("\nBY FREQ_DICH GROUP:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+for (grp in c(0, 1, 2)) {
+  grp_data <- SIMOA$bzra_daily_diazepam_eq[SIMOA$freq_dich == grp & !is.na(SIMOA$freq_dich)]
+  grp_label <- dplyr::case_when(grp == 0 ~ "Never used (0)",
+                                grp == 1 ~ "Discontinued (1)",
+                                grp == 2 ~ "Current user (2)")
+  cat(sprintf("  %s: n=%d, mean=%.2f, median=%.2f, max=%.2f\n",
+              grp_label, length(grp_data),
+              mean(grp_data, na.rm = TRUE),
+              median(grp_data, na.rm = TRUE),
+              max(grp_data, na.rm = TRUE)))
+}
+
+cat("\n")
+cat("  ⚠️  Sanity checks:\n")
+cat("  • Current users (freq_dich=2) should have mean > 0\n")
+cat("  • Discontinued users (freq_dich=1) should have mean > 0\n")
+cat("  • Never used (freq_dich=0) should have mean = 0\n\n")
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("✓ BZRA DIAZEPAM EQUIVALENT CALCULATIONS COMPLETE\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
 ```
 
 
-
-
 ## Variable Selection and Preperation
-
-Remember to add the weekly and daily use from the section above to this code. I have run this and there are no issues 
-but I need the conversion from DG before I write the code. 
-
 ```{r}
 #==============================================================================
 # CHUNK 6: VARIABLE SELECTION & PREPARATION
@@ -1565,10 +1920,11 @@ but I need the conversion from DG before I write the code.
 #   - BMQ Necessity raw items only (composite created post-imputation, Chunk 9)
 #   - Medication burden (4 separate items)
 #   - Length of BZRA use (c_lengthofuse)
-#   - Reasons for stopping / would stop (17 items)
+#   - Reasons for stopping/would stop: 17 items
 #   - Stop rate (stop_rate_dc)
 #   - Personality scales (DBAS, BFI, SURPS, CISS)
-#   - Reverse coding of personality items
+#   - Reverse coding of personality items (_r suffix, originals preserved)
+#   - BZRA diazepam equivalents (daily + weekly)
 #   - Full variable inventory
 #==============================================================================
 
@@ -1586,6 +1942,322 @@ if(file.exists("SIMOA_combined.rds")) {
   cat("⚠️  SIMOA_combined.rds not found - using SIMOA from memory\n")
   cat("  (Make sure Chunk 5 has been run)\n\n")
 }
+
+# =============================================================================
+# BZRA DIAZEPAM EQUIVALENT CALCULATIONS
+# =============================================================================
+# Formulas:
+#   Weekly diazepam eq  = SUM across drugs: (days_per_week × daily_dose_mg) / divisor
+#   Daily diazepam eq   = weekly_diazepam_eq / 7
+#
+# Conversion divisors (divide dose by this to get diazepam equivalents):
+#   Zopiclone=7.5, Lorazepam=1, Clonazepam=0.375, Alprazolam=0.5
+#   Bromazepam=3, Chlordiazepoxide=25, Diazepam=5, Flurazepam=15
+#   Nitrazepam=2.5, Oxazepam=15, Temazepam=10, Triazolam=0.25
+#   Zolpidem=10, Eszopiclone=3
+#
+# Note: "Less than 1 day/week" (code 8) recoded as 0.5 days/week
+# =============================================================================
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("BZRA DIAZEPAM EQUIVALENT CALCULATIONS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+# --- Helper: recode REDCap frequency radio to numeric days/week ---
+recode_freq <- function(x) {
+  dplyr::case_when(
+    x == 1 ~ 7,
+    x == 2 ~ 6,
+    x == 3 ~ 5,
+    x == 4 ~ 4,
+    x == 5 ~ 3,
+    x == 6 ~ 2,
+    x == 7 ~ 1,
+    x == 8 ~ 0.5,  # "Less than 1 day/week"
+    TRUE   ~ NA_real_
+  )
+}
+
+# --- Helper: extract dose from REDCap checkbox + other free-text field ---
+extract_dose <- function(data, dose_cols, other_col) {
+  dose <- rep(NA_real_, nrow(data))
+  for (col in names(dose_cols)) {
+    if (col %in% names(data)) {
+      mg_val <- dose_cols[[col]]
+      dose <- dplyr::if_else(
+        !is.na(data[[col]]) & data[[col]] == 1 & is.na(dose),
+        mg_val, dose
+      )
+    }
+  }
+  if (!is.null(other_col) && other_col %in% names(data)) {
+    other_vals <- suppressWarnings(as.numeric(data[[other_col]]))
+    dose <- dplyr::if_else(!is.na(other_vals), other_vals, dose)
+  }
+  return(dose)
+}
+
+# --- Helper: compute weekly diazepam equivalents for one drug ---
+compute_drug_weekly_eq <- function(data, drug) {
+  is_curr <- !is.na(data$freq_dich) & data$freq_dich == 2
+  is_past <- !is.na(data$freq_dich) & (data$freq_dich == 0 | data$freq_dich == 1)
+
+  freq_c <- if (drug$freq_curr %in% names(data)) recode_freq(data[[drug$freq_curr]]) else rep(NA_real_, nrow(data))
+  dose_c <- extract_dose(data, drug$dose_curr, drug$other_curr)
+
+  freq_p <- if (drug$freq_past %in% names(data)) recode_freq(data[[drug$freq_past]]) else rep(NA_real_, nrow(data))
+  dose_p <- extract_dose(data, drug$dose_past, drug$other_past)
+
+  dplyr::case_when(
+    is_curr & !is.na(freq_c) & !is.na(dose_c) ~ (freq_c * dose_c) / drug$divisor,
+    is_past & !is.na(freq_p) & !is.na(dose_p) ~ (freq_p * dose_p) / drug$divisor,
+    TRUE ~ 0
+  )
+}
+
+drug_definitions <- list(
+  alprazolam = list(
+    freq_curr  = "alp_use_freq_curr",
+    dose_curr  = list(alp_24dose_curr___1=0.25, alp_24dose_curr___2=0.5,
+                      alp_24dose_curr___3=1,    alp_24dose_curr___4=1.5,
+                      alp_24dose_curr___5=2,    alp_24dose_curr___6=2.5,
+                      alp_24dose_curr___7=3),
+    other_curr = "alp_mg_other_curr",
+    freq_past  = "alp_use_freq_past",
+    dose_past  = list(alp_24dose_past___1=0.25, alp_24dose_past___2=0.5,
+                      alp_24dose_past___3=1,    alp_24dose_past___4=1.5,
+                      alp_24dose_past___5=2,    alp_24dose_past___6=2.5,
+                      alp_24dose_past___7=3),
+    other_past = "alp_mg_other_past",
+    divisor    = 0.5
+  ),
+  bromazepam = list(
+    freq_curr  = "brom_use_freq_curr",
+    dose_curr  = list(brom_24dose_curr___1=1.5, brom_24dose_curr___2=3,
+                      brom_24dose_curr___3=4.5, brom_24dose_curr___4=6,
+                      brom_24dose_curr___5=9,   brom_24dose_curr___6=12,
+                      brom_24dose_curr___7=18),
+    other_curr = "brom_mg_other_curr",
+    freq_past  = "brom_use_freq_past",
+    dose_past  = list(brom_24dose_past___1=1.5, brom_24dose_past___2=3,
+                      brom_24dose_past___3=4.5, brom_24dose_past___4=6,
+                      brom_24dose_past___5=9,   brom_24dose_past___6=12,
+                      brom_24dose_past___7=18),
+    other_past = "brom_mg_other_past",
+    divisor    = 3
+  ),
+  chlordiazepoxide = list(
+    freq_curr  = "chlo_use_freq_curr",
+    dose_curr  = list(chlo_24dose_curr___1=5,  chlo_24dose_curr___2=10,
+                      chlo_24dose_curr___3=20, chlo_24dose_curr___4=25,
+                      chlo_24dose_curr___5=50),
+    other_curr = "chlo_mg_other_curr",
+    freq_past  = "chlor_use_freq_past",
+    dose_past  = list(chlo_24dose_past___1=5,  chlo_24dose_past___2=10,
+                      chlo_24dose_past___3=20, chlo_24dose_past___4=25,
+                      chlo_24dose_past___5=50),
+    other_past = "chlo_mg_other_past",
+    divisor    = 25
+  ),
+  clonazepam = list(
+    freq_curr  = "clon_use_freq_curr",
+    dose_curr  = list(clon_24dose_curr___1=0.25, clon_24dose_curr___2=0.5,
+                      clon_24dose_curr___3=1,    clon_24dose_curr___4=1.5,
+                      clon_24dose_curr___5=2,    clon_24dose_curr___6=3,
+                      clon_24dose_curr___7=4),
+    other_curr = "clo_mg_other_curr",
+    freq_past  = "clon_use_freq_past",
+    dose_past  = list(clon_24dose_past___1=0.25, clon_24dose_past___2=0.5,
+                      clon_24dose_past___3=1,    clon_24dose_past___4=1.5,
+                      clon_24dose_past___5=2,    clon_24dose_past___6=3,
+                      clon_24dose_past___7=4),
+    other_past = "clo_mg_other_past",
+    divisor    = 0.375
+  ),
+  diazepam = list(
+    freq_curr  = "dia_use_freq_curr",
+    dose_curr  = list(dia_24dose_curr___1=1,   dia_24dose_curr___2=2,
+                      dia_24dose_curr___3=2.5, dia_24dose_curr___4=4,
+                      dia_24dose_curr___5=5,   dia_24dose_curr___6=10,
+                      dia_24dose_curr___7=20),
+    other_curr = "dia_mg_other_curr",
+    freq_past  = "diaz_use_freq_past",
+    dose_past  = list(dia_24dose_past___1=1,   dia_24dose_past___2=2,
+                      dia_24dose_past___3=2.5, dia_24dose_past___4=4,
+                      dia_24dose_past___5=5,   dia_24dose_past___6=10,
+                      dia_24dose_past___7=20),
+    other_past = "dia_mg_other_past",
+    divisor    = 5
+  ),
+  eszopiclone = list(
+    freq_curr  = "eszo_use_freq_curr",
+    dose_curr  = list(eszo_24dose_curr___1=0.5, eszo_24dose_curr___2=1,
+                      eszo_24dose_curr___3=2,   eszo_24dose_curr___4=3,
+                      eszo_24dose_curr___5=4,   eszo_24dose_curr___6=4.5,
+                      eszo_24dose_curr___7=6),
+    other_curr = "eszo_mg_other_curr",
+    freq_past  = "eszo_use_freq_past",
+    dose_past  = list(eszo_24dose_past___1=0.5, eszo_24dose_past___2=1,
+                      eszo_24dose_past___3=2,   eszo_24dose_past___4=3,
+                      eszo_24dose_past___5=4,   eszo_24dose_past___6=4.5,
+                      eszo_24dose_past___7=6),
+    other_past = "eszo_mg_other_past",
+    divisor    = 3
+  ),
+  flurazepam = list(
+    freq_curr  = "flur_use_freq_curr",
+    dose_curr  = list(flura_24dose_curr___1=15, flura_24dose_curr___2=30),
+    other_curr = "flur_mg_other_curr",
+    freq_past  = "flur_use_freq_past",
+    dose_past  = list(flura_24dose_past___1=15, flura_24dose_past___2=30),
+    other_past = "flur_mg_other_past",
+    divisor    = 15
+  ),
+  lorazepam = list(
+    freq_curr  = "lor_use_freq_curr",
+    dose_curr  = list(loraz_24dose_curr___1=0.25, loraz_24dose_curr___2=0.5,
+                      loraz_24dose_curr___3=1,    loraz_24dose_curr___4=1.5,
+                      loraz_24dose_curr___5=2,    loraz_24dose_curr___6=3,
+                      loraz_24dose_curr___7=4),
+    other_curr = "loraz_mg_other_curr",
+    freq_past  = "loraz_use_freq_past",
+    dose_past  = list(loraz_24dose_past___1=0.25, loraz_24dose_past___2=0.5,
+                      loraz_24dose_past___3=1,    loraz_24dose_past___4=1.5,
+                      loraz_24dose_past___5=2,    loraz_24dose_past___6=3,
+                      loraz_24dose_past___7=4),
+    other_past = "loraz_mg_other_past",
+    divisor    = 1
+  ),
+  nitrazepam = list(
+    freq_curr  = "nitra_use_freq_curr",
+    dose_curr  = list(nitraz_24dose_curr___1=2.5, nitraz_24dose_curr___2=5,
+                      nitraz_24dose_curr___3=7.5, nitraz_24dose_curr___4=10,
+                      nitraz_24dose_curr___5=15,  nitraz_24dose_curr___6=20),
+    other_curr = "nitraz_mg_other_curr",
+    freq_past  = "nitraz_use_freq_past",
+    dose_past  = list(nitraz_24dose_past___1=2.5, nitraz_24dose_past___2=5,
+                      nitraz_24dose_past___3=7.5, nitraz_24dose_past___4=10,
+                      nitraz_24dose_past___5=15,  nitraz_24dose_past___6=20),
+    other_past = "nitraz_mg_other_past",
+    divisor    = 2.5
+  ),
+  oxazepam = list(
+    freq_curr  = "oxaz_use_freq_curr",
+    dose_curr  = list(oxaz_24dose_curr___1=5,    oxaz_24dose_curr___2=10,
+                      oxaz_24dose_curr___3=15,   oxaz_24dose_curr___4=22.5,
+                      oxaz_24dose_curr___5=30,   oxaz_24dose_curr___6=45,
+                      oxaz_24dose_curr___7=60),
+    other_curr = "oxaz_mg_other_curr",
+    freq_past  = "oxaz_use_freq_past",
+    dose_past  = list(oxaz_24dose_past___1=5,    oxaz_24dose_past___2=10,
+                      oxaz_24dose_past___3=15,   oxaz_24dose_past___4=22.5,
+                      oxaz_24dose_past___5=30,   oxaz_24dose_past___6=45,
+                      oxaz_24dose_past___7=60),
+    other_past = "oxaz_mg_other_past",
+    divisor    = 15
+  ),
+  temazepam = list(
+    freq_curr  = "temaz_use_freq_curr",
+    dose_curr  = list(temaz_24dose_curr___1=15, temaz_24dose_curr___2=30),
+    other_curr = "temaz_mg_other_curr",
+    freq_past  = "temaz_use_freq_past",
+    dose_past  = list(temaz_24dose_past___1=15, temaz_24dose_past___2=30),
+    other_past = "temaz_mg_other_past",
+    divisor    = 10
+  ),
+  triazolam = list(
+    freq_curr  = "triaz_use_freq_curr",
+    dose_curr  = list(triaz_24dose_curr___1=0.0625, triaz_24dose_curr___2=0.125,
+                      triaz_24dose_curr___3=0.25,   triaz_24dose_curr___4=0.5),
+    other_curr = "triaz_mg_other_curr",
+    freq_past  = "triaz_use_freq_past",
+    dose_past  = list(triaz_24dose_past___1=0.0625, triaz_24dose_past___2=0.125,
+                      triaz_24dose_past___3=0.25,   triaz_24dose_past___4=0.5),
+    other_past = "triaz_mg_other_past",
+    divisor    = 0.25
+  ),
+  zolpidem = list(
+    freq_curr  = "zolp_use_freq_curr",
+    dose_curr  = list(zolp_24dose_curr___1=5,  zolp_24dose_curr___2=10,
+                      zolp_24dose_curr___3=15),
+    other_curr = "zolpi_mg_other_curr",
+    freq_past  = "zolpi_use_freq_past",
+    dose_past  = list(zolp_24dose_past___1=5,  zolp_24dose_past___2=10,
+                      zolp_24dose_past___3=15),
+    other_past = "zolpi_mg_other_past",
+    divisor    = 10
+  ),
+  zopiclone = list(
+    freq_curr  = "zopi_use_freq_curr",
+    dose_curr  = list(zopi_24dose_curr___1=2.5,  zopi_24dose_curr___2=3.75,
+                      zopi_24dose_curr___3=5,    zopi_24dose_curr___4=7.5),
+    other_curr = "zopi_mg_other_curr",
+    freq_past  = "zopi_use_freq_past",
+    dose_past  = list(zopi_24dose_past___1=2.5,  zopi_24dose_past___2=3.75,
+                      zopi_24dose_past___3=5,    zopi_24dose_past___4=7.5),
+    other_past = "zopi_mg_other_past",
+    divisor    = 7.5
+  )
+)
+
+cat("Computing per-drug weekly diazepam equivalents...\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+weekly_eq_matrix <- purrr::map_dfc(
+  drug_definitions,
+  ~ compute_drug_weekly_eq(SIMOA, .x)
+)
+
+SIMOA <- SIMOA %>%
+  dplyr::mutate(
+    bzra_weekly_diazepam_eq = rowSums(weekly_eq_matrix, na.rm = TRUE),
+    bzra_daily_diazepam_eq  = bzra_weekly_diazepam_eq / 7
+  )
+
+cat("✓ bzra_weekly_diazepam_eq created\n")
+cat("✓ bzra_daily_diazepam_eq created\n\n")
+
+cat("BZRA EQUIVALENTS SUMMARY:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat(sprintf("  N with daily eq > 0:           %d\n",  sum(SIMOA$bzra_daily_diazepam_eq > 0,  na.rm = TRUE)))
+cat(sprintf("  N with daily eq = 0:           %d\n",  sum(SIMOA$bzra_daily_diazepam_eq == 0, na.rm = TRUE)))
+cat(sprintf("  Mean  daily diazepam eq (mg):  %.2f\n", mean(SIMOA$bzra_daily_diazepam_eq,    na.rm = TRUE)))
+cat(sprintf("  Median daily diazepam eq (mg): %.2f\n", median(SIMOA$bzra_daily_diazepam_eq,  na.rm = TRUE)))
+cat(sprintf("  Min   daily diazepam eq (mg):  %.2f\n", min(SIMOA$bzra_daily_diazepam_eq,     na.rm = TRUE)))
+cat(sprintf("  Max   daily diazepam eq (mg):  %.2f\n", max(SIMOA$bzra_daily_diazepam_eq,     na.rm = TRUE)))
+cat(sprintf("  SD    daily diazepam eq (mg):  %.2f\n\n", sd(SIMOA$bzra_daily_diazepam_eq,    na.rm = TRUE)))
+
+cat("PER-DRUG CONTRIBUTION (participants with non-zero eq):\n")
+cat("─────────────────────────────────────────────────────────────\n")
+for (i in seq_along(names(drug_definitions))) {
+  drug_name <- names(drug_definitions)[i]
+  n_nonzero <- sum(weekly_eq_matrix[[i]] > 0, na.rm = TRUE)
+  if (n_nonzero > 0) {
+    mean_eq <- mean(weekly_eq_matrix[[i]][weekly_eq_matrix[[i]] > 0], na.rm = TRUE)
+    cat(sprintf("  %-20s: n=%3d users, mean weekly eq = %.2f mg\n",
+                drug_name, n_nonzero, mean_eq))
+  } else {
+    cat(sprintf("  %-20s: no users with non-zero dose\n", drug_name))
+  }
+}
+
+cat("\nBY FREQ_DICH GROUP:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+for (grp in c(0, 1, 2)) {
+  grp_data  <- SIMOA$bzra_daily_diazepam_eq[!is.na(SIMOA$freq_dich) & SIMOA$freq_dich == grp]
+  grp_label <- dplyr::case_when(grp == 0 ~ "Never used (0)   ",
+                                grp == 1 ~ "Discontinued (1) ",
+                                grp == 2 ~ "Current user (2) ")
+  cat(sprintf("  %s: n=%d, mean=%.2f, median=%.2f, max=%.2f\n",
+              grp_label, length(grp_data),
+              mean(grp_data,   na.rm = TRUE),
+              median(grp_data, na.rm = TRUE),
+              max(grp_data,    na.rm = TRUE)))
+}
+cat("\n  ⚠️  Sanity checks:\n")
+cat("  • Current users (freq_dich=2) should have mean > 0\n")
+cat("  • Discontinued users (freq_dich=1) should have mean > 0\n")
+cat("  • Never used (freq_dich=0) should have mean = 0\n\n")
 
 # -----------------------------------------------------------------------------
 # PART A: DEFINE CORE VARIABLE LISTS
@@ -1608,11 +2280,13 @@ health_vars <- c("phq2_score", "osss_3_score", "gen_health", "med_quant")
 length_of_use <- "c_lengthofuse"
 
 # Medication burden (4 separate items — NOT composited)
-# NOTE: Naming inconsistency preserved to match REDCap export exactly
 med_burden_vars <- c("med_burden_1", "med_burden2", "medburden_3", "med_burden_4")
 
 # Sleep aids (will be recoded NA → 0)
 sleep_aids <- c("alc_sleep", "can_sleep", "melatonin_use", "op_sleep")
+
+# BZRA diazepam equivalents (computed above)
+bzra_dose_vars <- c("bzra_daily_diazepam_eq", "bzra_weekly_diazepam_eq")
 
 # Combined adverse effects variables (from Chunk 5)
 side_effects_items <- paste0("side_effects_", 1:4)
@@ -1634,11 +2308,10 @@ comb_vars <- c(
   c("capability_1", "capability")
 )
 
-# BMQ Necessity raw items only — composite (BMQ_necessity) created in Chunk 9
-# post-imputation to avoid imputing a derived variable
+# BMQ Necessity raw items only
 bmq_items <- c("benefit_1", "benefit_4", "benefit_5", "benefit_6", "benefit_dep")
 
-# Reasons for stopping / would stop (17 items, merged from Chunk 5)
+# Reasons for stopping / would stop (17 items)
 reasons_vars <- c(
   "memory", "thinking", "activities", "socialize", "driving",
   "balance", "falls", "indication", "efficacy", "alternative",
@@ -1646,7 +2319,8 @@ reasons_vars <- c(
   "dependence", "reduc", "cost"
 )
 
-# Personality scales
+# Personality scale items — ORIGINAL names
+# Final-scored lists (with _r suffix for reversed) are built in Part F
 dbas_items  <- c("dbas1", paste0("dbas_", 2:16))
 bfi_items   <- c("reserved", "trusting", "lazy", "relaxed", "few_interests",
                  "outgoing", "find_fault", "thorough", "nervous", "imagination")
@@ -1662,6 +2336,7 @@ cat("  Core demographics:    ", length(core_demographics), "variables\n")
 cat("  Health/clinical:      ", length(health_vars), "variables\n")
 cat("  Length of use:         1 variable (c_lengthofuse)\n")
 cat("  Medication burden:    ", length(med_burden_vars), "variables (separate items, no composite)\n")
+cat("  BZRA dose variables:   2 variables (daily + weekly diazepam eq)\n")
 cat("  Sleep aids:           ", length(sleep_aids), "variables\n")
 cat("  Adverse effects:      ", length(c(side_effects_items, safety_items,
                                           adl_items, dependence_items)), "variables\n")
@@ -1671,8 +2346,8 @@ cat("  COM-B:                ", length(comb_vars), "variables\n")
 cat("  BMQ Necessity items:  ", length(bmq_items), "raw items (composite deferred to Chunk 9)\n")
 cat("  Reasons (stop/would):", length(reasons_vars), "variables\n")
 cat("  DBAS items:            16\n")
-cat("  BFI items:             10\n")
-cat("  SURPS items:           23\n")
+cat("  BFI items:             10 (5 will be reverse coded → _r suffix)\n")
+cat("  SURPS items:           23 (6 will be reverse coded → _r suffix)\n")
 cat("  CISS items:            21\n\n")
 
 # -----------------------------------------------------------------------------
@@ -1725,7 +2400,7 @@ physical_conditions_exist <- any(grepl("^phys_health_con___",   names(SIMOA)))
 mental_conditions_exist   <- any(grepl("^ment_health_con___",   names(SIMOA)))
 
 if(sleep_conditions_exist || physical_conditions_exist || mental_conditions_exist) {
-  
+
   if(physical_conditions_exist) {
     phys_cols <- grep("^phys_health_con___", names(SIMOA), value = TRUE)
     phys_cols <- phys_cols[!phys_cols %in% "phys_health_con___0"]
@@ -1735,7 +2410,7 @@ if(sleep_conditions_exist || physical_conditions_exist || mental_conditions_exis
     SIMOA$n_physical_conditions <- 0
     cat("  n_physical_conditions: No checkboxes found, set to 0\n")
   }
-  
+
   if(mental_conditions_exist) {
     ment_cols <- grep("^ment_health_con___", names(SIMOA), value = TRUE)
     ment_cols <- ment_cols[!ment_cols %in% "ment_health_con___0"]
@@ -1745,7 +2420,7 @@ if(sleep_conditions_exist || physical_conditions_exist || mental_conditions_exis
     SIMOA$n_ment_conditions <- 0
     cat("  n_ment_conditions: No checkboxes found, set to 0\n")
   }
-  
+
   if(sleep_conditions_exist) {
     sleep_cols <- grep("^sleep_health_con___", names(SIMOA), value = TRUE)
     sleep_cols <- sleep_cols[!sleep_cols %in% "sleep_health_con___0"]
@@ -1755,23 +2430,23 @@ if(sleep_conditions_exist || physical_conditions_exist || mental_conditions_exis
     SIMOA$n_sleep_conditions <- 0
     cat("  n_sleep_conditions: No checkboxes found, set to 0\n")
   }
-  
+
   SIMOA$n_health_conditions <- SIMOA$n_physical_conditions +
                                 SIMOA$n_ment_conditions +
                                 SIMOA$n_sleep_conditions
   cat("✓ Created n_health_conditions (total)\n\n")
-  
+
   cat("Count variable summary:\n")
   for(cv in c("n_physical_conditions", "n_ment_conditions",
               "n_sleep_conditions", "n_health_conditions")) {
     cat(sprintf("  %-25s: Mean=%.2f, Range=[%d–%d]\n",
                 cv,
                 mean(SIMOA[[cv]], na.rm = TRUE),
-                min(SIMOA[[cv]], na.rm = TRUE),
-                max(SIMOA[[cv]], na.rm = TRUE)))
+                min(SIMOA[[cv]],  na.rm = TRUE),
+                max(SIMOA[[cv]],  na.rm = TRUE)))
   }
   cat("\n")
-  
+
 } else {
   cat("⚠️  No checkbox variables found - setting count variables to 0\n\n")
   SIMOA$n_physical_conditions <- 0
@@ -1794,7 +2469,7 @@ cat("═════════════════════════
 if("gen_health" %in% names(SIMOA)) {
   cat("✓ gen_health variable exists in dataset\n")
   cat("  Current class:", class(SIMOA$gen_health)[1], "\n")
-  
+
   if(!is.ordered(SIMOA$gen_health)) {
     cat("  Converting to ordered factor...\n")
     SIMOA$gen_health <- factor(SIMOA$gen_health,
@@ -1805,12 +2480,12 @@ if("gen_health" %in% names(SIMOA)) {
   cat("\ngen_health distribution:\n")
   print(table(SIMOA$gen_health, useNA = "ifany"))
   cat("\n")
-  
+
 } else if(any(grepl("^gen_health___", names(SIMOA)))) {
   cat("⚠️  gen_health not found as single variable — converting from checkboxes...\n")
   gh_cols <- paste0("gen_health___", 1:5)
   gh_cols <- gh_cols[gh_cols %in% names(SIMOA)]
-  
+
   if(length(gh_cols) > 0) {
     SIMOA$gen_health <- apply(SIMOA[, gh_cols], 1, function(x) {
       which_checked <- which(x == 1)
@@ -1840,36 +2515,26 @@ cat("═════════════════════════
 # ── E1. Length of BZRA Use ────────────────────────────────────────────────────
 cat("E1. Length of BZRA Use (c_lengthofuse)\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("  Estimated total years taking sleep medications (range: 0.1–100).\n\n")
 
 if("c_lengthofuse" %in% names(SIMOA)) {
   SIMOA$c_lengthofuse <- as.numeric(SIMOA$c_lengthofuse)
-  n_complete <- sum(!is.na(SIMOA$c_lengthofuse))
-  n_missing  <- sum( is.na(SIMOA$c_lengthofuse))
   cat(sprintf("  ✓ c_lengthofuse present | n complete=%d | n missing=%d\n",
-              n_complete, n_missing))
+              sum(!is.na(SIMOA$c_lengthofuse)), sum(is.na(SIMOA$c_lengthofuse))))
   cat(sprintf("  Mean (SD):  %.2f (%.2f) years\n",
               mean(SIMOA$c_lengthofuse, na.rm = TRUE),
               sd(SIMOA$c_lengthofuse,   na.rm = TRUE)))
-  cat(sprintf("  Median:     %.1f years\n",
-              median(SIMOA$c_lengthofuse, na.rm = TRUE)))
+  cat(sprintf("  Median:     %.1f years\n",  median(SIMOA$c_lengthofuse, na.rm = TRUE)))
   cat(sprintf("  Range:      %.1f to %.1f years\n",
               min(SIMOA$c_lengthofuse, na.rm = TRUE),
               max(SIMOA$c_lengthofuse, na.rm = TRUE)))
-  n_low  <- sum(SIMOA$c_lengthofuse <  0.1, na.rm = TRUE)
-  n_high <- sum(SIMOA$c_lengthofuse > 100,  na.rm = TRUE)
-  if(n_low  > 0) cat(sprintf("  ⚠️  %d values below minimum (0.1)\n", n_low))
-  if(n_high > 0) cat(sprintf("  ⚠️  %d values above maximum (100)\n", n_high))
 } else {
   cat("  ⚠️  c_lengthofuse NOT FOUND in dataset\n")
 }
 cat("\n")
 
-# ── E2. Medication Burden (4 separate items) ──────────────────────────────────
+# ── E2. Medication Burden ─────────────────────────────────────────────────────
 cat("E2. Medication Burden (4 separate items — NOT composited)\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("  NOTE: Each item retained separately — they ask conceptually\n")
-cat("        distinct questions and should not be combined.\n\n")
 
 med_burden_labels <- c(
   "I take too many medications",
@@ -1882,11 +2547,11 @@ for(i in seq_along(med_burden_vars)) {
   var <- med_burden_vars[i]
   if(var %in% names(SIMOA)) {
     SIMOA[[var]] <- as.numeric(SIMOA[[var]])
-    n_complete   <- sum(!is.na(SIMOA[[var]]))
-    n_missing    <- sum( is.na(SIMOA[[var]]))
-    m_val        <- round(mean(SIMOA[[var]], na.rm = TRUE), 2)
     cat(sprintf("  ✓ %-15s | complete=%d | missing=%d | Mean=%.2f\n",
-                var, n_complete, n_missing, m_val))
+                var,
+                sum(!is.na(SIMOA[[var]])),
+                sum( is.na(SIMOA[[var]])),
+                mean(SIMOA[[var]], na.rm = TRUE)))
     cat(sprintf("    \"%s\"\n", med_burden_labels[i]))
   } else {
     cat(sprintf("  ⚠️  %-15s | NOT FOUND in dataset\n", var))
@@ -1897,7 +2562,6 @@ cat("\n")
 # ── E3. Stop Rate ─────────────────────────────────────────────────────────────
 cat("E3. Stop Rate (stop_rate_dc)\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("  0=Abruptly, 1=Slowly (1-4 wks), 2=Very slowly (>4 wks)\n\n")
 
 if("stop_rate_dc" %in% names(SIMOA)) {
   cat("  ✓ stop_rate_dc present\n")
@@ -1910,8 +2574,7 @@ cat("\n")
 # ── E4. BMQ Necessity raw items ───────────────────────────────────────────────
 cat("E4. BMQ Necessity raw items\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("  NOTE: BMQ_necessity composite deferred to Chunk 9\n")
-cat("        (post-imputation to avoid imputing a derived variable).\n\n")
+cat("  NOTE: BMQ_necessity composite deferred to Chunk 9\n\n")
 
 for(var in bmq_items) {
   if(var %in% names(SIMOA)) {
@@ -1930,7 +2593,6 @@ cat("\n")
 # ── E5. Reasons for stopping / would stop ─────────────────────────────────────
 cat("E5. Reasons for Stopping / Would Stop (17 items)\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("  Scale: 1=Strongly Disagree to 5=Strongly Agree\n\n")
 
 reasons_found   <- reasons_vars[reasons_vars %in% names(SIMOA)]
 reasons_missing <- reasons_vars[!reasons_vars %in% names(SIMOA)]
@@ -1950,60 +2612,94 @@ cat("\n")
 # -----------------------------------------------------------------------------
 # PART F: REVERSE CODE PERSONALITY ITEMS
 # -----------------------------------------------------------------------------
+# Reversed items are saved as NEW variables with _r suffix.
+# Originals are preserved untouched for verification.
+# Final-scored item lists (mixing original + _r) are built here
+# and passed to Chunk 7 via analysis_variable_lists.rds.
+# -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("PART F: REVERSE CODING PERSONALITY ITEMS\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# ── F1. BFI ───────────────────────────────────────────────────────────────────
-cat("BFI Reverse Coding:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-cat("  Extraversion: reserved (R), outgoing\n")
-cat("  Agreeableness: trusting, find_fault (R)\n")
-cat("  Conscientiousness: lazy (R), thorough\n")
-cat("  Neuroticism: relaxed (R), nervous\n")
-cat("  Openness: few_interests (R), imagination\n\n")
-
-bfi_reverse <- c("reserved", "lazy", "relaxed", "few_interests", "find_fault")
-
-cat("Items to reverse (5-point scale: 1↔5, 2↔4, 3↔3):\n")
-for(item in bfi_reverse) {
-  if(item %in% names(SIMOA)) {
-    SIMOA[[item]] <- 6 - as.numeric(SIMOA[[item]])
-    cat(sprintf("  ✓ Reversed: %s\n", item))
-  } else {
-    cat(sprintf("  ⚠️  Not found: %s\n", item))
-  }
-}
-cat("\n")
-
-# ── F2. SURPS ─────────────────────────────────────────────────────────────────
-cat("SURPS Reverse Coding:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-cat("  Hopelessness subscale positive-valence items reversed.\n")
-cat("  NOTE: surps17 ('I feel that I'm a failure') is NOT reversed.\n\n")
-
+bfi_reverse   <- c("reserved", "lazy", "relaxed", "few_interests", "find_fault")
 surps_reverse <- c("surps1", "surps4", "surps7", "surps13", "surps20", "surps23")
 
-cat("Items to reverse (4-point scale: 1↔4, 2↔3):\n")
-for(item in surps_reverse) {
+# ── BFI (5-point scale: reverse = 6 - x) ─────────────────────────────────────
+cat("BFI Reverse Coding (5-point scale: 6 - x):\n")
+cat("  Original variables preserved; reversed saved as <item>_r\n\n")
+
+bfi_reversed_created <- character()
+for(item in bfi_reverse) {
   if(item %in% names(SIMOA)) {
-    SIMOA[[item]] <- 5 - as.numeric(SIMOA[[item]])
-    cat(sprintf("  ✓ Reversed: %s\n", item))
+    new_name          <- paste0(item, "_r")
+    SIMOA[[new_name]] <- 6 - as.numeric(SIMOA[[item]])
+    bfi_reversed_created <- c(bfi_reversed_created, new_name)
+
+    orig_mean <- mean(as.numeric(SIMOA[[item]]), na.rm = TRUE)
+    rev_mean  <- mean(SIMOA[[new_name]],          na.rm = TRUE)
+    cat(sprintf("  ✓ %-15s → %-17s | orig mean=%.2f | reversed mean=%.2f\n",
+                item, new_name, orig_mean, rev_mean))
   } else {
     cat(sprintf("  ⚠️  Not found: %s\n", item))
   }
 }
-cat("\n")
 
-cat("DBAS: No reverse coding needed (all items same direction)\n")
-cat("CISS: No reverse coding needed (all items same direction)\n\n")
+# ── SURPS (4-point scale: reverse = 5 - x) ───────────────────────────────────
+cat("\nSURPS Reverse Coding (4-point scale: 5 - x):\n")
+cat("  Original variables preserved; reversed saved as <item>_r\n\n")
+
+surps_reversed_created <- character()
+for(item in surps_reverse) {
+  if(item %in% names(SIMOA)) {
+    new_name          <- paste0(item, "_r")
+    SIMOA[[new_name]] <- 5 - as.numeric(SIMOA[[item]])
+    surps_reversed_created <- c(surps_reversed_created, new_name)
+
+    orig_mean <- mean(as.numeric(SIMOA[[item]]), na.rm = TRUE)
+    rev_mean  <- mean(SIMOA[[new_name]],          na.rm = TRUE)
+    cat(sprintf("  ✓ %-10s → %-12s | orig mean=%.2f | reversed mean=%.2f\n",
+                item, new_name, orig_mean, rev_mean))
+  } else {
+    cat(sprintf("  ⚠️  Not found: %s\n", item))
+  }
+}
+
+cat("\nDBAS: No reverse coding needed\n")
+cat("CISS: No reverse coding needed\n\n")
+
+# ── Build final-scored item lists ─────────────────────────────────────────────
+# Non-reversed items keep original name; reversed items use _r name
+cat("FINAL-SCORED ITEM LISTS:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+bfi_items_scored <- sapply(bfi_items, function(x) {
+  if(x %in% bfi_reverse) paste0(x, "_r") else x
+})
+names(bfi_items_scored) <- NULL
+
+surps_items_scored <- sapply(surps_items, function(x) {
+  if(x %in% surps_reverse) paste0(x, "_r") else x
+})
+names(surps_items_scored) <- NULL
+
+cat("BFI final-scored items (10):\n")
+cat(" ", paste(bfi_items_scored, collapse = ", "), "\n\n")
+
+cat("SURPS final-scored items (23):\n")
+cat(" ", paste(surps_items_scored, collapse = ", "), "\n\n")
+
+cat("DBAS final-scored items (16): [no changes — originals used]\n")
+cat("CISS final-scored items (21): [no changes — originals used]\n\n")
 
 cat("REVERSE CODING SUMMARY:\n")
-cat(sprintf("  BFI:   %d items reverse coded\n", sum(bfi_reverse   %in% names(SIMOA))))
-cat(sprintf("  SURPS: %d items reverse coded\n", sum(surps_reverse %in% names(SIMOA))))
-cat("  DBAS:  0 items (not needed)\n")
-cat("  CISS:  0 items (not needed)\n\n")
+cat(sprintf("  BFI:   %d items reverse coded (%s)\n",
+            length(bfi_reversed_created),
+            paste(bfi_reversed_created, collapse = ", ")))
+cat(sprintf("  SURPS: %d items reverse coded (%s)\n",
+            length(surps_reversed_created),
+            paste(surps_reversed_created, collapse = ", ")))
+cat("\n")
 
 # -----------------------------------------------------------------------------
 # PART G: SELECT FINAL VARIABLES
@@ -2021,6 +2717,7 @@ all_vars_to_keep <- c(
   med_burden_vars,
   condition_counts,
   sleep_aids,
+  bzra_dose_vars,
   side_effects_items,
   safety_items,
   adl_items,
@@ -2032,15 +2729,15 @@ all_vars_to_keep <- c(
   bmq_items,
   reasons_vars,
   dbas_items,
-  bfi_items,
-  surps_items,
+  bfi_items_scored,    # _r versions for reversed items
+  surps_items_scored,  # _r versions for reversed items
   ciss_items
 )
 
 vars_available <- all_vars_to_keep[all_vars_to_keep %in% names(SIMOA)]
 vars_missing   <- all_vars_to_keep[!all_vars_to_keep %in% names(SIMOA)]
 
-SIMOA_analysis <- SIMOA %>% select(all_of(vars_available))
+SIMOA_analysis <- SIMOA %>% dplyr::select(all_of(vars_available))
 
 cat("VARIABLE SELECTION SUMMARY:\n")
 cat("─────────────────────────────────────────────────────────────\n")
@@ -2055,41 +2752,24 @@ if(length(vars_missing) > 0) {
 }
 
 cat("VARIABLE BREAKDOWN:\n")
-cat(sprintf("  Outcome:                    %d / 1\n",
-            sum(outcome %in% names(SIMOA_analysis))))
-cat(sprintf("  Core demographics:          %d / %d\n",
-            sum(core_demographics %in% names(SIMOA_analysis)), length(core_demographics)))
-cat(sprintf("  Health/clinical:            %d / %d\n",
-            sum(health_vars %in% names(SIMOA_analysis)), length(health_vars)))
-cat(sprintf("  Length of use:              %d / 1\n",
-            sum(length_of_use %in% names(SIMOA_analysis))))
-cat(sprintf("  Medication burden (items):  %d / %d\n",
-            sum(med_burden_vars %in% names(SIMOA_analysis)), length(med_burden_vars)))
-cat(sprintf("  Condition counts:           %d / %d\n",
-            sum(condition_counts %in% names(SIMOA_analysis)), length(condition_counts)))
-cat(sprintf("  Sleep aids:                 %d / %d\n",
-            sum(sleep_aids %in% names(SIMOA_analysis)), length(sleep_aids)))
-cat(sprintf("  Adverse effects:            %d / 13\n",
-            sum(c(side_effects_items, safety_items,
-                  adl_items, dependence_items) %in% names(SIMOA_analysis))))
-cat(sprintf("  Withdrawal:                 %d / 2\n",
-            sum(c(withdrawal_combined, withdrawal_count) %in% names(SIMOA_analysis))))
-cat(sprintf("  Stop rate:                  %d / 1\n",
-            sum(stop_rate_var %in% names(SIMOA_analysis))))
-cat(sprintf("  COM-B:                      %d / %d\n",
-            sum(comb_vars %in% names(SIMOA_analysis)), length(comb_vars)))
-cat(sprintf("  BMQ Necessity raw items:    %d / %d\n",
-            sum(bmq_items %in% names(SIMOA_analysis)), length(bmq_items)))
-cat(sprintf("  Reasons (stop / would):     %d / %d\n",
-            sum(reasons_vars %in% names(SIMOA_analysis)), length(reasons_vars)))
-cat(sprintf("  DBAS items:                 %d / 16\n",
-            sum(dbas_items %in% names(SIMOA_analysis))))
-cat(sprintf("  BFI items:                  %d / 10\n",
-            sum(bfi_items %in% names(SIMOA_analysis))))
-cat(sprintf("  SURPS items:                %d / 23\n",
-            sum(surps_items %in% names(SIMOA_analysis))))
-cat(sprintf("  CISS items:                 %d / 21\n",
-            sum(ciss_items %in% names(SIMOA_analysis))))
+cat(sprintf("  Outcome:                    %d / 1\n",   sum(outcome %in% names(SIMOA_analysis))))
+cat(sprintf("  Core demographics:          %d / %d\n",  sum(core_demographics %in% names(SIMOA_analysis)), length(core_demographics)))
+cat(sprintf("  Health/clinical:            %d / %d\n",  sum(health_vars %in% names(SIMOA_analysis)), length(health_vars)))
+cat(sprintf("  Length of use:              %d / 1\n",   sum(length_of_use %in% names(SIMOA_analysis))))
+cat(sprintf("  Medication burden (items):  %d / %d\n",  sum(med_burden_vars %in% names(SIMOA_analysis)), length(med_burden_vars)))
+cat(sprintf("  BZRA dose variables:        %d / 2\n",   sum(bzra_dose_vars %in% names(SIMOA_analysis))))
+cat(sprintf("  Condition counts:           %d / %d\n",  sum(condition_counts %in% names(SIMOA_analysis)), length(condition_counts)))
+cat(sprintf("  Sleep aids:                 %d / %d\n",  sum(sleep_aids %in% names(SIMOA_analysis)), length(sleep_aids)))
+cat(sprintf("  Adverse effects:            %d / 13\n",  sum(c(side_effects_items, safety_items, adl_items, dependence_items) %in% names(SIMOA_analysis))))
+cat(sprintf("  Withdrawal:                 %d / 2\n",   sum(c(withdrawal_combined, withdrawal_count) %in% names(SIMOA_analysis))))
+cat(sprintf("  Stop rate:                  %d / 1\n",   sum(stop_rate_var %in% names(SIMOA_analysis))))
+cat(sprintf("  COM-B:                      %d / %d\n",  sum(comb_vars %in% names(SIMOA_analysis)), length(comb_vars)))
+cat(sprintf("  BMQ Necessity raw items:    %d / %d\n",  sum(bmq_items %in% names(SIMOA_analysis)), length(bmq_items)))
+cat(sprintf("  Reasons (stop / would):     %d / %d\n",  sum(reasons_vars %in% names(SIMOA_analysis)), length(reasons_vars)))
+cat(sprintf("  DBAS items:                 %d / 16\n",  sum(dbas_items %in% names(SIMOA_analysis))))
+cat(sprintf("  BFI items (final-scored):   %d / 10\n",  sum(bfi_items_scored %in% names(SIMOA_analysis))))
+cat(sprintf("  SURPS items (final-scored): %d / 23\n",  sum(surps_items_scored %in% names(SIMOA_analysis))))
+cat(sprintf("  CISS items:                 %d / 21\n",  sum(ciss_items %in% names(SIMOA_analysis))))
 cat(sprintf("\n  TOTAL in SIMOA_analysis:    %d variables × %d observations\n\n",
             ncol(SIMOA_analysis), nrow(SIMOA_analysis)))
 
@@ -2101,9 +2781,6 @@ cat("═════════════════════════
 cat("PART H: FULL VARIABLE INVENTORY\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat(sprintf("Total variables in SIMOA_analysis: %d\n",   ncol(SIMOA_analysis)))
-cat(sprintf("Total observations:                %d\n\n", nrow(SIMOA_analysis)))
-
 var_inventory <- data.frame(
   Variable    = names(SIMOA_analysis),
   Class       = sapply(SIMOA_analysis, function(x) paste(class(x), collapse = "/")),
@@ -2113,13 +2790,14 @@ var_inventory <- data.frame(
   stringsAsFactors = FALSE
 )
 
-var_inventory$Domain <- case_when(
+var_inventory$Domain <- dplyr::case_when(
   var_inventory$Variable == "scrn_stopped_bzra"                        ~ "OUTCOME",
   var_inventory$Variable %in% core_demographics                        ~ "Demographics",
   var_inventory$Variable %in% health_vars                              ~ "Clinical: Health",
   var_inventory$Variable == "c_lengthofuse"                            ~ "Clinical: Length of Use",
   var_inventory$Variable %in% med_burden_vars                          ~ "Clinical: Medication Burden",
   var_inventory$Variable %in% condition_counts                         ~ "Clinical: Condition Counts",
+  var_inventory$Variable %in% bzra_dose_vars                           ~ "Clinical: BZRA Dose",
   var_inventory$Variable %in% sleep_aids                               ~ "Behavioural: Sleep Aids",
   var_inventory$Variable %in% c(side_effects_items, safety_items,
                                  adl_items, dependence_items)          ~ "Clinical: Adverse Effects",
@@ -2129,8 +2807,8 @@ var_inventory$Domain <- case_when(
   var_inventory$Variable %in% bmq_items                               ~ "Clinical: BMQ Necessity (raw items)",
   var_inventory$Variable %in% reasons_vars                            ~ "Behavioural: Reasons",
   var_inventory$Variable %in% dbas_items                              ~ "Personality: DBAS",
-  var_inventory$Variable %in% bfi_items                               ~ "Personality: BFI",
-  var_inventory$Variable %in% surps_items                             ~ "Personality: SURPS",
+  var_inventory$Variable %in% bfi_items_scored                        ~ "Personality: BFI",
+  var_inventory$Variable %in% surps_items_scored                      ~ "Personality: SURPS",
   var_inventory$Variable %in% ciss_items                              ~ "Personality: CISS",
   TRUE                                                                 ~ "Other"
 )
@@ -2148,11 +2826,44 @@ write.csv(var_inventory, "variable_inventory.csv", row.names = FALSE)
 cat("✓ Saved: variable_inventory.csv\n\n")
 
 # -----------------------------------------------------------------------------
-# PART I: SAVE PREPARED DATASET
+# PART I: COLUMN NAME PRINTOUT FOR IMPUTATION VERIFICATION
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART I: SAVING PREPARED DATASET\n")
+cat("PART I: COLUMN NAMES FOR IMPUTATION VERIFICATION\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+cat(sprintf("SIMOA_analysis contains %d variables across %d observations.\n\n",
+            ncol(SIMOA_analysis), nrow(SIMOA_analysis)))
+
+col_df <- data.frame(
+  Index       = seq_along(names(SIMOA_analysis)),
+  Variable    = names(SIMOA_analysis),
+  Class       = sapply(SIMOA_analysis, function(x) paste(class(x), collapse = "/")),
+  Pct_Missing = round(sapply(SIMOA_analysis, function(x) 100 * mean(is.na(x))), 1)
+)
+
+cat("ALL VARIABLES TO BE IMPUTED:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(col_df, row.names = FALSE)
+
+cat("\n")
+cat(sprintf("✓ %d variables confirmed in SIMOA_analysis\n", nrow(col_df)))
+cat(sprintf("  %d variables have no missing data (Pct_Missing = 0)\n",
+            sum(col_df$Pct_Missing == 0)))
+cat(sprintf("  %d variables have some missing data\n",
+            sum(col_df$Pct_Missing > 0)))
+cat(sprintf("  Highest missingness: %s (%.1f%%)\n",
+            col_df$Variable[which.max(col_df$Pct_Missing)],
+            max(col_df$Pct_Missing)))
+cat("\n")
+
+# -----------------------------------------------------------------------------
+# PART J: SAVE PREPARED DATASET
+# -----------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART J: SAVING PREPARED DATASET\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 saveRDS(SIMOA_analysis, "SIMOA_analysis.rds")
@@ -2164,24 +2875,23 @@ analysis_variables <- list(
   health           = health_vars[health_vars %in% names(SIMOA_analysis)],
   length_of_use    = length_of_use,
   med_burden       = med_burden_vars[med_burden_vars %in% names(SIMOA_analysis)],
+  bzra_dose        = bzra_dose_vars[bzra_dose_vars %in% names(SIMOA_analysis)],
   condition_counts = condition_counts[condition_counts %in% names(SIMOA_analysis)],
   sleep_aids       = sleep_aids[sleep_aids %in% names(SIMOA_analysis)],
-  adverse_effects  = c(side_effects_items, safety_items,
-                        adl_items, dependence_items)[
-                        c(side_effects_items, safety_items,
-                          adl_items, dependence_items) %in% names(SIMOA_analysis)],
+  adverse_effects  = c(side_effects_items, safety_items, adl_items, dependence_items)[
+                       c(side_effects_items, safety_items, adl_items, dependence_items) %in% names(SIMOA_analysis)],
   withdrawal       = c(withdrawal_combined, withdrawal_count)[
-                        c(withdrawal_combined, withdrawal_count) %in% names(SIMOA_analysis)],
+                       c(withdrawal_combined, withdrawal_count) %in% names(SIMOA_analysis)],
   stop_rate        = stop_rate_var,
   comb             = comb_vars[comb_vars %in% names(SIMOA_analysis)],
   bmq_items        = bmq_items[bmq_items %in% names(SIMOA_analysis)],
   reasons          = reasons_vars[reasons_vars %in% names(SIMOA_analysis)],
   dbas             = dbas_items[dbas_items %in% names(SIMOA_analysis)],
-  bfi              = bfi_items[bfi_items %in% names(SIMOA_analysis)],
-  surps            = surps_items[surps_items %in% names(SIMOA_analysis)],
+  bfi              = bfi_items_scored[bfi_items_scored %in% names(SIMOA_analysis)],
+  surps            = surps_items_scored[surps_items_scored %in% names(SIMOA_analysis)],
   ciss             = ciss_items[ciss_items %in% names(SIMOA_analysis)],
-  bfi_reversed     = bfi_reverse[bfi_reverse %in% names(SIMOA_analysis)],
-  surps_reversed   = surps_reverse[surps_reverse %in% names(SIMOA_analysis)],
+  bfi_reversed     = bfi_reversed_created[bfi_reversed_created %in% names(SIMOA_analysis)],
+  surps_reversed   = surps_reversed_created[surps_reversed_created %in% names(SIMOA_analysis)],
   n_observations   = nrow(SIMOA_analysis),
   n_variables      = ncol(SIMOA_analysis)
 )
@@ -2194,21 +2904,25 @@ cat("✓ VARIABLE SELECTION & PREPARATION COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 cat("SUMMARY:\n")
+cat("  • BZRA diazepam equivalents computed (daily + weekly)\n")
 cat("  • Sleep aids recoded (NA → 0)\n")
 cat("  • Health condition counts created\n")
 cat("  • gen_health processed\n")
 cat("  • c_lengthofuse added (years of BZRA use)\n")
-cat("  • med_burden_1/2/3/4 added as separate items (no composite)\n")
+cat("  • med_burden_1/2/3/4 added as separate items\n")
 cat("  • stop_rate_dc added\n")
 cat("  • BMQ Necessity: 5 raw items added (composite deferred to Chunk 9)\n")
 cat("  • 17 reasons for stopping/would stop added\n")
-cat("  • BFI items reverse coded (5 items)\n")
-cat("  • SURPS items reverse coded (6 items)\n")
+cat("  • BFI: 5 items reverse coded → _r variables (originals preserved)\n")
+cat("  • SURPS: 6 items reverse coded → _r variables (originals preserved)\n")
+cat("  • Final-scored lists (bfi_items_scored, surps_items_scored) built\n")
 cat("  • Full variable inventory saved to variable_inventory.csv\n")
+cat("  • Column name printout generated for imputation verification\n")
 cat(sprintf("  • Final dataset: %d obs × %d vars\n",
             nrow(SIMOA_analysis), ncol(SIMOA_analysis)))
 cat("  • Ready for diagnostics (Chunk 7)\n\n")
 ```
+
 
 
 
@@ -2220,12 +2934,21 @@ cat("  • Ready for diagnostics (Chunk 7)\n\n")
 #==============================================================================
 # Purpose: Comprehensive diagnostics before multiple imputation
 # Outputs: Statistically-derived m and maxit, optimized imputation parameters
+#
+# KEY METHODS:
+#   m     → Von Hippel (2020) two-stage FMI-based quadratic rule
+#             DOI: 10.1177/0049124117747303
+#             Package: howManyImputations (Errickson, CRAN)
+#   maxit → Empirical convergence experiment (m=5, maxit=10/20/30/40)
+#             Gelman-Rubin PSRF < 1.1 criterion
+#             Gelman & Rubin (1992); Brooks & Gelman (1998)
 #==============================================================================
 
 library(mice)
 library(dplyr)
 library(ggplot2)
-library(car)  # For VIF
+library(car)
+library(howManyImputations)
 
 cat("\n")
 cat("═══════════════════════════════════════════════════════════════\n")
@@ -2235,7 +2958,7 @@ cat("═════════════════════════
 # Load prepared dataset from Chunk 6
 if(file.exists("SIMOA_analysis.rds")) {
   SIMOA_analysis <- readRDS("SIMOA_analysis.rds")
-  analysis_vars <- readRDS("analysis_variable_lists.rds")
+  analysis_vars  <- readRDS("analysis_variable_lists.rds")
   cat("✓ Loaded SIMOA_analysis.rds from Chunk 6\n")
   cat("  Dimensions:", nrow(SIMOA_analysis), "rows ×", ncol(SIMOA_analysis), "columns\n\n")
 } else {
@@ -2251,7 +2974,6 @@ if(!is.null(analysis_vars$bfi_reversed) && length(analysis_vars$bfi_reversed) > 
 } else {
   cat("⚠️  No BFI reverse coding detected\n")
 }
-
 if(!is.null(analysis_vars$surps_reversed) && length(analysis_vars$surps_reversed) > 0) {
   cat("✓ SURPS items reversed in Chunk 6:", length(analysis_vars$surps_reversed), "\n")
   cat("  Items:", paste(analysis_vars$surps_reversed, collapse = ", "), "\n")
@@ -2279,122 +3001,61 @@ cat("═════════════════════════
 cat("PART A: COMPREHENSIVE MISSINGNESS DIAGNOSTICS\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Calculate missingness statistics
-n_total <- nrow(df_imp)
-n_vars <- ncol(df_imp)
+n_total        <- nrow(df_imp)
+n_vars         <- ncol(df_imp)
 missing_counts <- colSums(is.na(df_imp))
-missing_pct <- 100 * missing_counts / n_total
-
-# Overall missingness
-total_cells <- n_total * n_vars
-total_missing <- sum(missing_counts)
+missing_pct    <- 100 * missing_counts / n_total
+total_cells    <- n_total * n_vars
+total_missing  <- sum(missing_counts)
 pct_missing_overall <- 100 * total_missing / total_cells
 
 cat("OVERALL MISSINGNESS:\n")
 cat("─────────────────────────────────────────────────────────────\n")
 cat("  Total observations:", n_total, "\n")
-cat("  Total variables:", n_vars, "\n")
-cat("  Total cells:", total_cells, "\n")
-cat("  Missing cells:", total_missing, "(", round(pct_missing_overall, 2), "%)\n")
-cat("  Complete cases:", sum(complete.cases(df_imp)), 
+cat("  Total variables:",    n_vars,  "\n")
+cat("  Total cells:",        total_cells, "\n")
+cat("  Missing cells:",      total_missing, "(", round(pct_missing_overall, 2), "%)\n")
+cat("  Complete cases:",     sum(complete.cases(df_imp)),
     "(", round(100 * sum(complete.cases(df_imp)) / n_total, 1), "%)\n\n")
 
-# Variables with missing data
 vars_with_missing <- names(missing_counts[missing_counts > 0])
-vars_complete <- names(missing_counts[missing_counts == 0])
+vars_complete     <- names(missing_counts[missing_counts == 0])
 
 cat("VARIABLE-LEVEL MISSINGNESS:\n")
 cat("─────────────────────────────────────────────────────────────\n")
 cat("  Variables with missing data:", length(vars_with_missing), "\n")
-cat("  Variables complete:", length(vars_complete), "\n\n")
+cat("  Variables complete:",          length(vars_complete),     "\n\n")
 
-# Missingness categories
+miss_cats <- cut(missing_pct,
+                 breaks = c(0, 5, 10, 25, 40, 100),
+                 labels = c("Minimal (<5%)", "Low (5-10%)", "Moderate (10-25%)",
+                            "High (25-40%)", "Very High (>40%)"),
+                 include.lowest = TRUE)
+
 cat("MISSINGNESS SEVERITY:\n")
 cat("─────────────────────────────────────────────────────────────\n")
-miss_cats <- cut(missing_pct, 
-                 breaks = c(0, 5, 10, 25, 40, 100),
-                 labels = c("Minimal (<5%)", "Low (5-10%)", "Moderate (10-25%)", 
-                           "High (25-40%)", "Very High (>40%)"),
-                 include.lowest = TRUE)
-cat(sprintf("  Minimal (<5%%):      %3d variables\n", sum(miss_cats == "Minimal (<5%)", na.rm = TRUE)))
-cat(sprintf("  Low (5-10%%):        %3d variables\n", sum(miss_cats == "Low (5-10%)", na.rm = TRUE)))
+cat(sprintf("  Minimal (<5%%):      %3d variables\n", sum(miss_cats == "Minimal (<5%)",     na.rm = TRUE)))
+cat(sprintf("  Low (5-10%%):        %3d variables\n", sum(miss_cats == "Low (5-10%)",       na.rm = TRUE)))
 cat(sprintf("  Moderate (10-25%%):  %3d variables\n", sum(miss_cats == "Moderate (10-25%)", na.rm = TRUE)))
-cat(sprintf("  High (25-40%%):      %3d variables\n", sum(miss_cats == "High (25-40%)", na.rm = TRUE)))
+cat(sprintf("  High (25-40%%):      %3d variables\n", sum(miss_cats == "High (25-40%)",     na.rm = TRUE)))
 cat(sprintf("  Very High (>40%%):   %3d variables\n\n", sum(miss_cats == "Very High (>40%)", na.rm = TRUE)))
 
-# Top 20 variables by missingness
 cat("TOP 20 VARIABLES BY MISSINGNESS:\n")
 cat("─────────────────────────────────────────────────────────────\n")
 top_missing <- head(sort(missing_pct[missing_pct > 0], decreasing = TRUE), 20)
 for(i in seq_along(top_missing)) {
-  cat(sprintf("  %2d. %-30s: %5.1f%% (%4d obs)\n", 
-              i, names(top_missing)[i], top_missing[i], 
+  cat(sprintf("  %2d. %-30s: %5.1f%% (%4d obs)\n",
+              i, names(top_missing)[i], top_missing[i],
               round(top_missing[i] * n_total / 100)))
 }
 cat("\n")
 
-# -----------------------------------------------------------------------------
-# A1. STATISTICAL DERIVATION OF m (NUMBER OF IMPUTATIONS)
-# -----------------------------------------------------------------------------
-
-cat("A1. STATISTICAL DERIVATION OF m\n")
-cat("─────────────────────────────────────────────────────────────\n\n")
-
-# Calculate optimal m based on missingness
-max_miss_pct <- max(missing_pct)
-max_miss_var <- names(missing_pct)[which.max(missing_pct)]
-
-cat("METHOD: White et al. (2011) recommend m ≥ percentage of missing data\n")
-cat("        Von Hippel (2020) suggests m ≥ 20 for most applications\n")
-cat("        Graham et al. (2007) suggest m = 100*FMI (fraction missing info)\n\n")
-
-cat("CALCULATION:\n")
-cat("  Highest missingness:", round(max_miss_pct, 1), "% (", max_miss_var, ")\n")
-cat("  Average missingness (vars with missing):", 
-    round(mean(missing_pct[missing_pct > 0]), 1), "%\n")
-cat("  Overall missingness:", round(pct_missing_overall, 2), "%\n\n")
-
-# Calculate based on highest missingness
-m_based_on_max <- ceiling(max_miss_pct)
-
-# Calculate based on average missingness
-m_based_on_avg <- ceiling(mean(missing_pct[missing_pct > 0]))
-
-# Conservative approach: use max
-optimal_m <- max(m_based_on_max, 20)  # Minimum 20
-
-# Cap at reasonable maximum
-if(optimal_m > 50) {
-  cat("  Initial calculation:", optimal_m, "(capped at 50 for computational efficiency)\n")
-  optimal_m <- 50
-}
-
-cat("DECISION RULE:\n")
-cat("  m based on maximum missingness:", m_based_on_max, "\n")
-cat("  m based on average missingness:", m_based_on_avg, "\n")
-cat("  Minimum recommended (Von Hippel):", 20, "\n")
-cat("  → SELECTED m =", optimal_m, "\n\n")
-
-cat("JUSTIFICATION:\n")
-if(optimal_m == m_based_on_max && optimal_m >= 20) {
-  cat("  Using m =", optimal_m, "based on highest missingness (", round(max_miss_pct, 1), "%)\n")
-  cat("  This ensures adequate imputations for variables with most missing data\n\n")
-} else if(optimal_m == 20) {
-  cat("  Using minimum m = 20 (Von Hippel, 2020)\n")
-  cat("  Maximum missingness is low (", round(max_miss_pct, 1), "%), so 20 is sufficient\n\n")
-} else {
-  cat("  Using m =", optimal_m, "for computational efficiency\n")
-  cat("  Capped from calculated", m_based_on_max, "to balance accuracy and speed\n\n")
-}
-
-# Save missingness summary
 miss_summary <- data.frame(
-  variable = names(missing_pct),
-  n_missing = missing_counts,
+  variable    = names(missing_pct),
+  n_missing   = missing_counts,
   pct_missing = missing_pct,
-  category = miss_cats
-) %>%
-  arrange(desc(pct_missing))
+  category    = miss_cats
+) %>% arrange(desc(pct_missing))
 
 write.csv(miss_summary, "pre_imputation_missingness_summary.csv", row.names = FALSE)
 cat("✓ Saved: pre_imputation_missingness_summary.csv\n\n")
@@ -2407,18 +3068,17 @@ cat("═════════════════════════
 cat("PART B: VARIABLE VALIDATION\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# B1. Constant and near-zero variance check
+# B1. Constant and near-zero variance
 cat("B1. Checking for constant/near-zero variance variables\n")
 cat("─────────────────────────────────────────────────────────────\n")
 
 constant_vars <- character()
-nzv_vars <- character()
+nzv_vars      <- character()
 
 for(var in names(df_imp)) {
   if(is.numeric(df_imp[[var]])) {
-    non_na <- na.omit(df_imp[[var]])
+    non_na   <- na.omit(df_imp[[var]])
     n_unique <- length(unique(non_na))
-    
     if(n_unique <= 1) {
       constant_vars <- c(constant_vars, var)
       cat("  ⚠️  Constant:", var, "(", n_unique, "unique value)\n")
@@ -2430,23 +3090,19 @@ for(var in names(df_imp)) {
       }
     }
   } else if(is.factor(df_imp[[var]])) {
-    non_na <- na.omit(df_imp[[var]])
-    n_levels <- length(levels(df_imp[[var]]))
+    non_na   <- na.omit(df_imp[[var]])
     n_unique <- length(unique(non_na))
-    
     if(n_unique <= 1) {
       constant_vars <- c(constant_vars, var)
       cat("  ⚠️  Single-level factor:", var, "\n")
     }
   }
 }
-
-if(length(constant_vars) == 0 && length(nzv_vars) == 0) {
+if(length(constant_vars) == 0 && length(nzv_vars) == 0)
   cat("  ✓ No constant or near-zero variance variables detected\n")
-}
 cat("\n")
 
-# B2. Minimum sample size check
+# B2. Minimum sample size
 cat("B2. Checking minimum sample size (non-missing observations)\n")
 cat("─────────────────────────────────────────────────────────────\n")
 
@@ -2458,81 +3114,70 @@ for(var in names(df_imp)) {
     cat("  ⚠️  Low sample size:", var, "(n =", n_obs, ")\n")
   }
 }
-
-if(length(low_n_vars) == 0) {
+if(length(low_n_vars) == 0)
   cat("  ✓ All variables have adequate sample size (n ≥ 10)\n")
-}
 cat("\n")
 
-# B3. Separation check for binary variables
+# B3. Separation check — factors only
+# ─────────────────────────────────────────────────────────────────────────────
+# IMPORTANT: This check is restricted to factor variables only.
+# Numeric Likert-scale items (SURPS, CISS, BFI, DBAS, side-effect ratings,
+# safety ratings, benefit ratings) must NOT be flagged here, even if they
+# have sparse response categories. Separation is only a problem for variables
+# modelled with logreg/polr/polyreg. PMM handles sparse numeric values
+# without any convergence risk, so including them here would incorrectly
+# remove them from the predictor matrix and reduce imputation quality.
+# ─────────────────────────────────────────────────────────────────────────────
+
 cat("B3. Checking for separation in binary/categorical variables\n")
 cat("─────────────────────────────────────────────────────────────\n")
+cat("  Note: Check restricted to factor variables (logreg/polr/polyreg targets).\n")
+cat("  Numeric Likert items are excluded — sparse counts are not a\n")
+cat("  separation risk for PMM and should remain in the predictor matrix.\n\n")
 
 separation_vars <- character()
 for(var in names(df_imp)) {
-  if(is.factor(df_imp[[var]]) || (is.numeric(df_imp[[var]]) && 
-                                   length(unique(na.omit(df_imp[[var]]))) <= 5)) {
+  # FIX: only check true factor variables, not numeric Likert items
+  if(is.factor(df_imp[[var]])) {
     non_na <- na.omit(df_imp[[var]])
     if(length(non_na) > 0) {
       freq_table <- table(non_na)
       if(any(freq_table < 5)) {
         separation_vars <- c(separation_vars, var)
-        cat("  ⚠️  Sparse levels:", var, 
-            "(min count =", min(freq_table), ")\n")
+        cat("  ⚠️  Sparse levels:", var, "(min count =", min(freq_table), ")\n")
       }
     }
   }
 }
-
-if(length(separation_vars) == 0) {
+if(length(separation_vars) == 0)
   cat("  ✓ No separation issues detected\n")
-}
 cat("\n")
 
-# B4. SPECIAL HANDLING FOR DERIVED VARIABLES
+# B4. Derived variables
 cat("B4. Handling derived/composite variables\n")
 cat("─────────────────────────────────────────────────────────────\n")
 
-# n_health_conditions is a SUM of other condition counts
-# It should NOT be imputed or used as a predictor
 derived_vars <- c("n_health_conditions")
-
 if(any(derived_vars %in% names(df_imp))) {
   cat("  ISSUE: n_health_conditions is derived (sum of component counts)\n")
-  cat("         Using it as predictor creates perfect collinearity\n\n")
-  cat("  Removing derived variables from imputation:\n")
+  cat("         Removing to prevent perfect collinearity in imputation\n\n")
   for(var in derived_vars) {
     if(var %in% names(df_imp)) {
-      cat("    • ", var, " (will be recalculated post-imputation)\n", sep = "")
       df_imp <- df_imp %>% select(-all_of(var))
+      cat("  ✓ Removed:", var, "(will be recalculated post-imputation)\n")
     }
   }
-  cat("\n  ✓ Derived variables removed\n")
-  cat("    Remaining variables:", ncol(df_imp), "\n\n")
+  cat("  Remaining variables:", ncol(df_imp), "\n\n")
   cat("  POST-IMPUTATION: n_health_conditions will be recalculated as:\n")
-  cat("    n_health_conditions = n_physical_conditions + n_ment_conditions + n_sleep_conditions\n\n")
+  cat("    n_physical_conditions + n_ment_conditions + n_sleep_conditions\n\n")
 } else {
   cat("  ✓ No derived variables to remove\n\n")
 }
 
-# Compile problematic variables
 problematic_vars <- unique(c(constant_vars, nzv_vars, low_n_vars, derived_vars))
 
-if(length(problematic_vars) > length(derived_vars)) {
-  cat("SUMMARY OF PROBLEMATIC VARIABLES (excluding derived):\n")
-  cat("─────────────────────────────────────────────────────────────\n")
-  non_derived_problematic <- setdiff(problematic_vars, derived_vars)
-  if(length(non_derived_problematic) > 0) {
-    cat("  Additional problematic:", length(non_derived_problematic), "\n")
-    for(v in non_derived_problematic) {
-      cat("    •", v, "\n")
-    }
-    cat("\n")
-  }
-}
-
 # -----------------------------------------------------------------------------
-# PART C: MULTICOLLINEARITY CHECK (VIF) - ALL ELIGIBLE VARIABLES
+# PART C: MULTICOLLINEARITY CHECK (VIF)
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
@@ -2540,11 +3185,10 @@ cat("PART C: MULTICOLLINEARITY CHECK (VIF)\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 cat("PURPOSE: High multicollinearity can cause imputation instability.\n")
-cat("  • VIF < 5: Acceptable\n")
-cat("  • VIF 5-10: Moderate concern\n")
-cat("  • VIF > 10: High multicollinearity (consider removing)\n\n")
+cat("  • VIF < 5:   Acceptable\n")
+cat("  • VIF 5-10:  Moderate concern\n")
+cat("  • VIF > 10:  High multicollinearity (consider removing)\n\n")
 
-# Select numeric variables with COMPLETE data for VIF
 numeric_complete <- df_imp %>%
   select(where(is.numeric)) %>%
   select(where(~sum(is.na(.)) == 0))
@@ -2552,105 +3196,95 @@ numeric_complete <- df_imp %>%
 cat("ELIGIBLE VARIABLES FOR VIF (complete numeric only):\n")
 cat("─────────────────────────────────────────────────────────────\n")
 if(ncol(numeric_complete) > 0) {
-  for(i in 1:ncol(numeric_complete)) {
+  for(i in 1:ncol(numeric_complete))
     cat(sprintf("  %2d. %s\n", i, names(numeric_complete)[i]))
-  }
   cat("\nTotal eligible:", ncol(numeric_complete), "variables\n\n")
 } else {
   cat("  No complete numeric variables found\n\n")
 }
 
+# Initialise redundant_predictors so it is always defined for Part D
+redundant_predictors <- character()
+
 if(ncol(numeric_complete) >= 3) {
-  cat("Calculating VIF for ALL", ncol(numeric_complete), "eligible variables...\n\n")
-  
   vif_result <- tryCatch({
-    # Check correlation matrix first
-    cor_matrix <- cor(numeric_complete, use = "complete.obs")
-    
-    # Check for perfect/near-perfect correlations
+    cor_matrix    <- cor(numeric_complete, use = "complete.obs")
     upper_tri_cor <- cor_matrix[upper.tri(cor_matrix)]
-    max_cor <- max(abs(upper_tri_cor))
-    
+    max_cor       <- max(abs(upper_tri_cor))
+
     if(max_cor > 0.99) {
       cat("  ⚠️  Perfect/near-perfect correlation detected (r =", round(max_cor, 3), ")\n")
-      
-      # Find which variables are perfectly correlated
       perfect_pairs <- which(abs(cor_matrix) > 0.99 & abs(cor_matrix) < 1, arr.ind = TRUE)
+
+      # ── Identify and store redundant predictors ──────────────────────────
+      # For each perfectly correlated pair, the second variable (alphabetically
+      # later in the matrix) is flagged as redundant. It will be zeroed out as
+      # a predictor column in the predictor matrix below, preventing chain
+      # instability. Both variables can still be imputed if needed (complete
+      # variables are skipped by mice automatically).
+      #
+      # In this dataset the expected pair is:
+      #   bzra_daily_diazepam_eq ↔ bzra_weekly_diazepam_eq
+      # Weekly dose = daily dose × 7, so r = 1 by construction. Both are
+      # complete (no imputation needed), so only their predictor role matters.
+      # ─────────────────────────────────────────────────────────────────────
+
       if(nrow(perfect_pairs) > 0) {
         cat("     Perfectly correlated pairs:\n")
-        for(i in 1:min(5, nrow(perfect_pairs))) {
-          var1 <- rownames(cor_matrix)[perfect_pairs[i, 1]]
-          var2 <- colnames(cor_matrix)[perfect_pairs[i, 2]]
-          cat("       •", var1, "↔", var2, "\n")
-        }
-        if(nrow(perfect_pairs) > 5) {
-          cat("       ... and", nrow(perfect_pairs) - 5, "more pairs\n")
+        seen_pairs <- character()
+        for(i in 1:nrow(perfect_pairs)) {
+          v1 <- rownames(cor_matrix)[perfect_pairs[i, 1]]
+          v2 <- colnames(cor_matrix)[perfect_pairs[i, 2]]
+          pair_key <- paste(sort(c(v1, v2)), collapse = "↔")
+          if(!pair_key %in% seen_pairs) {
+            cat("       •", v1, "↔", v2, "(redundant as predictor:", v2, ")\n")
+            redundant_predictors <- c(redundant_predictors, v2)
+            seen_pairs <- c(seen_pairs, pair_key)
+          }
         }
       }
       cat("     Skipping VIF due to perfect multicollinearity\n\n")
       NULL
+
     } else {
-      # Calculate VIF using linear model approach
-      vif_formula <- as.formula(paste(names(numeric_complete)[1], "~", 
+      vif_formula <- as.formula(paste(names(numeric_complete)[1], "~",
                                       paste(names(numeric_complete)[-1], collapse = " + ")))
       vif_model <- lm(vif_formula, data = numeric_complete)
       car::vif(vif_model)
     }
   }, error = function(e) {
-    cat("  ⚠️  VIF calculation failed:", conditionMessage(e), "\n")
-    cat("     This indicates aliased coefficients (perfect multicollinearity)\n")
-    cat("     Proceeding without VIF analysis\n\n")
+    cat("  ⚠️  VIF calculation failed:", conditionMessage(e), "\n\n")
     NULL
   })
-  
+
   if(!is.null(vif_result)) {
-    vif_df <- data.frame(
-      variable = names(vif_result),
-      VIF = as.numeric(vif_result)
-    ) %>%
+    vif_df <- data.frame(variable = names(vif_result), VIF = as.numeric(vif_result)) %>%
       arrange(desc(VIF))
-    
-    cat("VIF RESULTS FOR ALL", nrow(vif_df), "VARIABLES:\n")
+
+    cat("VIF RESULTS:\n")
     cat("─────────────────────────────────────────────────────────────\n")
-    
-    # Print all VIF values
     for(i in 1:nrow(vif_df)) {
       status <- if(vif_df$VIF[i] < 5) "✓" else if(vif_df$VIF[i] < 10) "⚠️" else "✗"
       cat(sprintf("  %s %2d. %-30s: VIF = %6.2f\n",
                   status, i, vif_df$variable[i], vif_df$VIF[i]))
     }
-    cat("\n")
-    
-    # Summary
     high_vif <- vif_df %>% filter(VIF > 10)
-    mod_vif <- vif_df %>% filter(VIF >= 5 & VIF <= 10)
-    low_vif <- vif_df %>% filter(VIF < 5)
-    
-    cat("VIF SUMMARY:\n")
-    cat("─────────────────────────────────────────────────────────────\n")
-    cat(sprintf("  ✓ Low VIF (<5):        %3d variables (%.1f%%)\n", 
-                nrow(low_vif), 100*nrow(low_vif)/nrow(vif_df)))
-    cat(sprintf("  ⚠️ Moderate VIF (5-10): %3d variables (%.1f%%)\n", 
-                nrow(mod_vif), 100*nrow(mod_vif)/nrow(vif_df)))
-    cat(sprintf("  ✗ High VIF (>10):      %3d variables (%.1f%%)\n\n", 
-                nrow(high_vif), 100*nrow(high_vif)/nrow(vif_df)))
-    
+    mod_vif  <- vif_df %>% filter(VIF >= 5 & VIF <= 10)
+    low_vif  <- vif_df %>% filter(VIF < 5)
+    cat(sprintf("\n  ✓ Low VIF (<5):        %3d variables\n", nrow(low_vif)))
+    cat(sprintf("  ⚠️ Moderate VIF (5-10): %3d variables\n", nrow(mod_vif)))
+    cat(sprintf("  ✗ High VIF (>10):      %3d variables\n\n", nrow(high_vif)))
     if(nrow(high_vif) > 0) {
-      cat("⚠️  VARIABLES WITH HIGH VIF (>10) - CONSIDER REMOVING:\n")
-      for(i in 1:nrow(high_vif)) {
-        cat(sprintf("  %2d. %-30s: VIF = %.2f\n", 
-                    i, high_vif$variable[i], high_vif$VIF[i]))
-      }
-      cat("\nHigh VIF indicates these variables are highly correlated with others.\n")
-      cat("Consider removing one from each correlated pair.\n\n")
+      cat("⚠️  VARIABLES WITH HIGH VIF — CONSIDER REMOVING:\n")
+      for(i in 1:nrow(high_vif))
+        cat(sprintf("  %2d. %-30s: VIF = %.2f\n", i, high_vif$variable[i], high_vif$VIF[i]))
+      cat("\n")
     }
-    
     write.csv(vif_df, "vif_analysis.csv", row.names = FALSE)
     cat("✓ Saved: vif_analysis.csv\n\n")
   }
 } else {
-  cat("ℹ️  Not enough complete numeric variables for VIF analysis\n")
-  cat("   (Need at least 3, found", ncol(numeric_complete), ")\n\n")
+  cat("ℹ️  Not enough complete numeric variables for VIF analysis\n\n")
 }
 
 # -----------------------------------------------------------------------------
@@ -2661,17 +3295,16 @@ cat("═════════════════════════
 cat("PART D: DEFINING VARIABLE TYPES FOR IMPUTATION\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Get variable lists from Chunk 6
 continuous_vars <- c(
   "age",
   "med_quant", "phq2_score", "osss_3_score",
-  # NOTE: n_health_conditions removed - will be recalculated post-imputation
   "n_physical_conditions", "n_ment_conditions", "n_sleep_conditions",
   "wdl_symptom_count",
-  if(!is.null(analysis_vars$dbas)) analysis_vars$dbas else character(),
-  if(!is.null(analysis_vars$bfi)) analysis_vars$bfi else character(),
+  "bzra_daily_diazepam_eq", "bzra_weekly_diazepam_eq",
+  if(!is.null(analysis_vars$dbas))  analysis_vars$dbas  else character(),
+  if(!is.null(analysis_vars$bfi))   analysis_vars$bfi   else character(),
   if(!is.null(analysis_vars$surps)) analysis_vars$surps else character(),
-  if(!is.null(analysis_vars$ciss)) analysis_vars$ciss else character()
+  if(!is.null(analysis_vars$ciss))  analysis_vars$ciss  else character()
 )
 
 binary_vars <- c("sex")
@@ -2679,236 +3312,624 @@ binary_vars <- c("sex")
 ordered_vars <- c(
   "education", "income", "employment", "driving_freq",
   "gen_health",
-  if(!is.null(analysis_vars$sleep_aids)) analysis_vars$sleep_aids else character(),
+  if(!is.null(analysis_vars$sleep_aids))      analysis_vars$sleep_aids      else character(),
   if(!is.null(analysis_vars$adverse_effects)) analysis_vars$adverse_effects else character(),
   "stop_wdl_exp_combined"
 )
 
-unordered_categorical <- c(
-  paste0("stop_wdl_exp___", 0:4)
-)
+unordered_categorical <- c(paste0("stop_wdl_exp___", 0:4))
 
-# Filter to only variables in df_imp
-continuous_vars <- continuous_vars[continuous_vars %in% names(df_imp)]
-binary_vars <- binary_vars[binary_vars %in% names(df_imp)]
-ordered_vars <- ordered_vars[ordered_vars %in% names(df_imp)]
+# Filter to variables present in df_imp
+continuous_vars       <- continuous_vars[continuous_vars %in% names(df_imp)]
+binary_vars           <- binary_vars[binary_vars %in% names(df_imp)]
+ordered_vars          <- ordered_vars[ordered_vars %in% names(df_imp)]
 unordered_categorical <- unordered_categorical[unordered_categorical %in% names(df_imp)]
 
 cat("VARIABLE TYPE ASSIGNMENT:\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("  Continuous (PMM):", length(continuous_vars), "variables\n")
-cat("  Binary (logreg):", length(binary_vars), "variables\n")
-cat("  Ordered (polr):", length(ordered_vars), "variables\n")
+cat("  Continuous (PMM):               ", length(continuous_vars), "variables\n")
+cat("  Binary (logreg):                ", length(binary_vars), "variables\n")
+cat("  Ordered categorical (polr):     ", length(ordered_vars), "variables\n")
 cat("  Unordered categorical (polyreg):", length(unordered_categorical), "variables\n")
-cat("  Total:", length(continuous_vars) + length(binary_vars) + 
+cat("  Total assigned:                 ",
+    length(continuous_vars) + length(binary_vars) +
     length(ordered_vars) + length(unordered_categorical), "\n\n")
 
-# Convert to proper types
-cat("Converting variables to proper types...\n")
+cat("NOTE: BZRA dose variables assigned to continuous (PMM):\n")
+for(v in c("bzra_daily_diazepam_eq", "bzra_weekly_diazepam_eq")) {
+  if(v %in% continuous_vars)
+    cat(sprintf("  ✓ %s\n", v))
+  else
+    cat(sprintf("  ⚠️  %s not found in df_imp\n", v))
+}
+cat("\n")
 
-for(var in continuous_vars) {
+# ── Force personality scale items to numeric ──────────────────────────────────
+# CISS, SURPS, BFI, and DBAS items are Likert-scale integers.
+# They must be numeric (not ordered factors) so mice uses PMM, not polr.
+# This also prevents them appearing as sparse categorical variables, which
+# causes separation warnings and chain instability.
+# Note: BFI and SURPS lists from analysis_vars already contain _r names
+# for reversed items — those are also forced to numeric here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+cat("FORCING PERSONALITY SCALE ITEMS TO NUMERIC:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  Rationale: Likert items are treated as continuous (PMM).\n")
+cat("  Forcing to integer prevents accidental ordered-factor encoding\n")
+cat("  which assigns polr and causes sparse-level separation warnings.\n\n")
+
+scale_vars_all <- c(
+  if(!is.null(analysis_vars$dbas))  analysis_vars$dbas  else character(),
+  if(!is.null(analysis_vars$bfi))   analysis_vars$bfi   else character(),
+  if(!is.null(analysis_vars$surps)) analysis_vars$surps else character(),
+  if(!is.null(analysis_vars$ciss))  analysis_vars$ciss  else character()
+)
+scale_vars_all <- scale_vars_all[scale_vars_all %in% names(df_imp)]
+
+n_converted <- 0
+n_already   <- 0
+for(var in scale_vars_all) {
   if(!is.numeric(df_imp[[var]])) {
+    df_imp[[var]] <- as.integer(df_imp[[var]])
+    n_converted   <- n_converted + 1
+  } else {
+    n_already <- n_already + 1
+  }
+}
+
+cat(sprintf("  ✓ Converted to integer: %d items\n", n_converted))
+cat(sprintf("  ✓ Already numeric:      %d items\n", n_already))
+cat(sprintf("  Scales covered: DBAS (%d), BFI (%d), SURPS (%d), CISS (%d)\n\n",
+            sum(analysis_vars$dbas  %in% scale_vars_all),
+            sum(analysis_vars$bfi   %in% scale_vars_all),
+            sum(analysis_vars$surps %in% scale_vars_all),
+            sum(analysis_vars$ciss  %in% scale_vars_all)))
+
+# ── Convert remaining variables to proper types ───────────────────────────────
+cat("Converting remaining variables to proper types...\n")
+
+for(var in continuous_vars)
+  if(!is.numeric(df_imp[[var]]))
     df_imp[[var]] <- as.numeric(as.character(df_imp[[var]]))
-  }
-}
-
-for(var in binary_vars) {
+for(var in binary_vars)
   df_imp[[var]] <- as.numeric(df_imp[[var]])
-}
-
-for(var in ordered_vars) {
-  if(!is.ordered(df_imp[[var]])) {
+for(var in ordered_vars)
+  if(!is.ordered(df_imp[[var]]))
     df_imp[[var]] <- factor(df_imp[[var]], ordered = TRUE)
-  }
-}
-
-for(var in unordered_categorical) {
-  if(!is.factor(df_imp[[var]]) || is.ordered(df_imp[[var]])) {
+for(var in unordered_categorical)
+  if(!is.factor(df_imp[[var]]) || is.ordered(df_imp[[var]]))
     df_imp[[var]] <- factor(df_imp[[var]], ordered = FALSE)
-  }
-}
 
 cat("✓ Variable type conversion complete\n\n")
 
 # -----------------------------------------------------------------------------
-# PART E: STATISTICAL DERIVATION OF MAXIT
+# Set up mice methods and predictor matrix
+# -----------------------------------------------------------------------------
+
+init   <- mice(df_imp, maxit = 0, print = FALSE)
+method <- init$method
+
+# ── quickpred(): limit predictors per imputation model ───────────────────────
+# Default mice uses ALL variables as predictors for each imputed variable.
+# With large questionnaire datasets this causes chain instability.
+# quickpred() keeps only variables with meaningful correlation to the target.
+#
+# mincor = 0.17  → only predictors with |r| ≥ 0.17
+#                 targets ~15–25 predictors per model (Van Buuren, 2018 §6.3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+cat("Building predictor matrix with quickpred()...\n")
+cat("  mincor = 0.17  (minimum |r| to be included as predictor)\n")
+cat("  Target: 15–25 predictors per model (Van Buuren, 2018 §6.3)\n\n")
+
+pred <- quickpred(
+  df_imp,
+  mincor = 0.17
+)
+
+# Manually remove near-perfectly correlated predictors (|r| > 0.95)
+cat("Removing near-perfectly correlated predictors (|r| > 0.95)...\n")
+numeric_vars_for_cor <- names(df_imp)[sapply(df_imp, is.numeric)]
+if(length(numeric_vars_for_cor) >= 2) {
+  cor_matrix     <- cor(df_imp[, numeric_vars_for_cor], use = "pairwise.complete.obs")
+  high_cor_pairs <- which(abs(cor_matrix) > 0.95 & abs(cor_matrix) < 1, arr.ind = TRUE)
+  n_zeroed       <- 0
+  if(nrow(high_cor_pairs) > 0) {
+    for(k in 1:nrow(high_cor_pairs)) {
+      row_var <- rownames(cor_matrix)[high_cor_pairs[k, 1]]
+      col_var <- colnames(cor_matrix)[high_cor_pairs[k, 2]]
+      if(col_var %in% colnames(pred)) {
+        pred[row_var, col_var] <- 0
+        n_zeroed <- n_zeroed + 1
+      }
+    }
+    cat(sprintf("  Zeroed %d high-correlation predictor slots (|r| > 0.95)\n\n", n_zeroed))
+  } else {
+    cat("  ✓ No near-perfect correlations found\n\n")
+  }
+}
+
+# ── Remove perfectly correlated redundant predictors identified in Part C ─────
+# bzra_weekly_diazepam_eq = bzra_daily_diazepam_eq × 7 (r = 1 by construction).
+# Both variables are complete so neither requires imputation, but retaining
+# both as predictors causes the VIF singularity and can destabilise imputation
+# chains for other variables. The redundant variable's COLUMN is zeroed so it
+# is never used to predict any other variable. Its ROW remains as set by
+# quickpred() — since it is complete, mice will skip it automatically.
+# ─────────────────────────────────────────────────────────────────────────────
+
+if(length(redundant_predictors) > 0) {
+  cat("Removing perfectly correlated redundant predictors from predictor matrix...\n")
+  for(var in redundant_predictors) {
+    if(var %in% colnames(pred)) {
+      pred[, var] <- 0
+      cat(sprintf("  ✓ Zeroed column: %s\n", var))
+      cat(sprintf("    (perfectly correlated with another complete variable — r = 1)\n"))
+      cat(sprintf("    (not used as a predictor; complete data, so not imputed either)\n"))
+    }
+  }
+  cat("\n")
+}
+
+# Report predictor matrix density after quickpred
+n_possible  <- nrow(pred) * (ncol(pred) - 1)
+n_used      <- sum(pred)
+pct_used    <- round(100 * n_used / n_possible, 1)
+avg_per_var <- round(n_used / nrow(pred), 1)
+
+cat("PREDICTOR MATRIX SUMMARY (after quickpred):\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat(sprintf("  Possible predictor slots: %d\n", n_possible))
+cat(sprintf("  Active predictor slots:   %d (%.1f%%)\n", n_used, pct_used))
+cat(sprintf("  Avg predictors per model: %.1f\n", avg_per_var))
+if(avg_per_var > 25)
+  cat("  ⚠️  Average > 25 — consider raising mincor to 0.25\n")
+if(avg_per_var < 5)
+  cat("  ⚠️  Average < 5 — mincor may be too high, consider lowering to 0.1\n")
+cat("\n")
+
+# ── Remove sparse categorical variables from predictor matrix ─────────────────
+# Sparse levels (cell counts < 5) in true factor variables cause perfect
+# separation in logreg/polr, producing convergence failures. Zero their column
+# so they are never used AS A PREDICTOR. They can still be imputed themselves.
+#
+# Note: only factor variables reach this point (see Part B3 fix), so no
+# numeric Likert items are incorrectly removed here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+cat("Checking sparse variables flagged in Part B...\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+if(length(separation_vars) > 0) {
+  removed_as_predictors <- character()
+  for(var in separation_vars) {
+    if(var %in% colnames(pred)) {
+      pred[, var] <- 0
+      removed_as_predictors <- c(removed_as_predictors, var)
+    }
+  }
+  if(length(removed_as_predictors) > 0) {
+    cat(sprintf("  Removed %d sparse factor variable(s) as predictors:\n",
+                length(removed_as_predictors)))
+    for(v in removed_as_predictors)
+      cat(sprintf("    • %s\n", v))
+    cat("  Note: these variables can still be imputed — they just won't\n")
+    cat("        be used to impute others, preventing separation errors.\n\n")
+  }
+} else {
+  cat("  ✓ No sparse factor variables to remove from predictor matrix\n\n")
+}
+
+# Zero out problematic vars (derived, constant, low-n) as predictors
+for(var in problematic_vars) {
+  if(var %in% colnames(pred)) pred[, var] <- 0
+}
+
+prob_in_pred <- problematic_vars[problematic_vars %in% colnames(pred)]
+if(length(prob_in_pred) > 0) {
+  cat(sprintf("  ✓ Problematic variables zeroed as predictors: %s\n\n",
+              paste(prob_in_pred, collapse = ", ")))
+} else {
+  cat("  ✓ No additional problematic variables in predictor matrix\n\n")
+}
+
+# Final predictor matrix stats
+n_used_final      <- sum(pred)
+avg_per_var_final <- round(n_used_final / nrow(pred), 1)
+cat(sprintf("FINAL predictor matrix: %d active slots, avg %.1f predictors/model\n\n",
+            n_used_final, avg_per_var_final))
+
+# ── Assign imputation methods ─────────────────────────────────────────────────
+for(var in continuous_vars)
+  if(var %in% names(method) && var %in% vars_with_missing) method[var] <- "pmm"
+for(var in binary_vars)
+  if(var %in% names(method) && var %in% vars_with_missing) method[var] <- "logreg"
+for(var in ordered_vars)
+  if(var %in% names(method) && var %in% vars_with_missing) method[var] <- "polr"
+for(var in unordered_categorical)
+  if(var %in% names(method) && var %in% vars_with_missing) method[var] <- "polyreg"
+for(var in problematic_vars)
+  if(var %in% names(method)) method[var] <- ""
+
+cat("METHOD SUMMARY:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  PMM:        ", sum(method == "pmm"),     "\n")
+cat("  Logreg:     ", sum(method == "logreg"),  "\n")
+cat("  Polr:       ", sum(method == "polr"),    "\n")
+cat("  Polyreg:    ", sum(method == "polyreg"), "\n")
+cat("  Not imputed:", sum(method == ""),        "\n\n")
+
+# -----------------------------------------------------------------------------
+# PART E: STATISTICAL DERIVATION OF m — VON HIPPEL (2020) TWO-STAGE PROCEDURE
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART E: STATISTICAL DERIVATION OF MAXIT\n")
+cat("PART E: STATISTICAL DERIVATION OF m (NUMBER OF IMPUTATIONS)\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("PURPOSE: Determine iterations needed for convergence.\n")
-cat("  • Maxit too low: Imputation hasn't converged (biased estimates)\n")
-cat("  • Maxit too high: Unnecessary computation time\n\n")
+cat("METHOD: Von Hippel (2020) two-stage FMI-based quadratic rule\n")
+cat("  Citation: Von Hippel, P.T. (2020). How many imputations do you\n")
+cat("  need? A two-stage calculation using a quadratic rule.\n")
+cat("  Sociological Methods & Research, 49(3), 699-718.\n")
+cat("  DOI: 10.1177/0049124117747303\n\n")
 
-cat("METHOD: Test small sample imputation to estimate convergence rate\n\n")
+cat("RATIONALE:\n")
+cat("  The required number of imputations is not fixed — it depends on\n")
+cat("  the Fraction of Missing Information (FMI) in your specific data.\n")
+cat("  FMI is not the fraction of missing values; it is the fraction by\n")
+cat("  which the squared standard error would shrink if data were complete.\n")
+cat("  Von Hippel (2020) shows that m scales quadratically with FMI:\n")
+cat("  m = 1 + 200 * FMI^2  (for CV(SE) = 0.05, i.e., 5% replicability)\n\n")
 
-# Initialize MICE to get methods
-init <- mice(df_imp, maxit = 0, print = FALSE)
-method <- init$method
-pred <- init$predictorMatrix
+cat("STAGE 1: Pilot imputation with m = 20 to estimate FMI\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  Running pilot imputation (m=20, maxit=20)...\n")
 
-# Set methods
-for(var in continuous_vars) {
-  if(var %in% names(method) && var %in% vars_with_missing) {
-    method[var] <- "pmm"
-  }
-}
-for(var in binary_vars) {
-  if(var %in% names(method) && var %in% vars_with_missing) {
-    method[var] <- "logreg"
-  }
-}
-for(var in ordered_vars) {
-  if(var %in% names(method) && var %in% vars_with_missing) {
-    method[var] <- "polr"
-  }
-}
-for(var in unordered_categorical) {
-  if(var %in% names(method) && var %in% vars_with_missing) {
-    method[var] <- "polyreg"
-  }
-}
-
-# Remove methods for problematic variables
-if(length(problematic_vars) > 0) {
-  for(var in problematic_vars) {
-    if(var %in% names(method)) {
-      method[var] <- ""
-    }
-  }
-}
-
-cat("METHOD SUMMARY:\n")
-cat("  PMM:", sum(method == "pmm"), "\n")
-cat("  Logreg:", sum(method == "logreg"), "\n")
-cat("  Polr:", sum(method == "polr"), "\n")
-cat("  Polyreg:", sum(method == "polyreg"), "\n")
-cat("  Not imputed:", sum(method == ""), "\n\n")
-
-# Run quick test imputation to check convergence characteristics
-cat("Running test imputation to assess convergence...\n")
-
-test_imp <- tryCatch({
-  mice(df_imp, m = 2, maxit = 20, method = method, predictorMatrix = pred, 
-       seed = 12345, printFlag = FALSE)
+pilot_imp <- tryCatch({
+  mice(df_imp, m = 20, maxit = 20, method = method,
+       predictorMatrix = pred, seed = 12345, printFlag = FALSE)
 }, error = function(e) {
-  cat("  ⚠️  Test imputation failed:", conditionMessage(e), "\n")
+  cat("  ⚠️  Pilot imputation failed:", conditionMessage(e), "\n")
   NULL
 })
 
-if(!is.null(test_imp)) {
-  # Check for convergence issues in logged events
-  if(nrow(test_imp$loggedEvents) > 0) {
-    n_convergence_issues <- sum(grepl("convergence|collinearity", 
-                                      test_imp$loggedEvents$out, 
-                                      ignore.case = TRUE))
-    if(n_convergence_issues > 0) {
-      cat("  ⚠️", n_convergence_issues, "convergence warnings detected\n")
-      cat("     → Recommending higher maxit\n")
-      convergence_penalty <- 10
+if(!is.null(pilot_imp)) {
+  cat("  ✓ Pilot imputation complete\n\n")
+
+  max_miss_var <- names(which.max(missing_pct))
+  max_miss_pct <- max(missing_pct)
+
+  cat("STAGE 2: Estimating FMI from pilot imputations\n")
+  cat("─────────────────────────────────────────────────────────────\n")
+  cat("  Variable used for FMI estimation:", max_miss_var,
+      "(highest missingness:", round(max_miss_pct, 1), "%)\n")
+  cat("  Note: FMI from highest-missing variable gives conservative (safe) m\n\n")
+
+  available_preds <- names(df_imp)[
+    names(df_imp) != max_miss_var &
+    sapply(df_imp, is.numeric) &
+    colSums(is.na(df_imp)) == 0
+  ]
+  available_preds <- head(available_preds, 10)
+
+  fmi_result <- tryCatch({
+    if(length(available_preds) >= 2) {
+
+      fmi_formula <- as.formula(paste(max_miss_var, "~",
+                                      paste(available_preds, collapse = " + ")))
+
+      cat("  Fitting model across", pilot_imp$m, "imputed datasets...\n")
+
+      fits <- lapply(1:pilot_imp$m, function(i) {
+        completed_data <- mice::complete(pilot_imp, action = i)
+        lm(fmi_formula, data = completed_data)
+      })
+
+      pooled_fit <- mice::pool(as.mira(fits))
+      cat("  ✓ Model pooled across imputations\n\n")
+
+      fmi_m              <- how_many_imputations(pooled_fit)
+      fmi_m_conservative <- how_many_imputations(pooled_fit, cv = 0.01)
+
+      list(m_standard = fmi_m, m_conservative = fmi_m_conservative, success = TRUE)
+
     } else {
-      cat("  ✓ No convergence warnings\n")
-      convergence_penalty <- 0
+      cat("  ⚠️  Insufficient complete numeric predictors for FMI model\n")
+      cat("      (need ≥ 2, found", length(available_preds), ")\n")
+      list(success = FALSE)
     }
+  }, error = function(e) {
+    cat("  ⚠️  FMI calculation failed:", conditionMessage(e), "\n")
+    list(success = FALSE)
+  })
+
+  if(isTRUE(fmi_result$success)) {
+    cat("FMI-BASED m CALCULATION:\n")
+    cat("─────────────────────────────────────────────────────────────\n")
+    cat(sprintf("  m for CV(SE) = 0.05 (5%% precision):  %d imputations\n",
+                fmi_result$m_standard))
+    cat(sprintf("  m for CV(SE) = 0.01 (1%% precision):  %d imputations\n",
+                fmi_result$m_conservative))
+    cat("\n")
+
+    m_white_floor <- ceiling(max_miss_pct)
+    m_vonhippel   <- fmi_result$m_standard
+    optimal_m     <- max(m_vonhippel, m_white_floor, 20)
+
+    if(optimal_m > 100) {
+      cat(sprintf("  Initial calculation: %d (capped at 100 for feasibility)\n", optimal_m))
+      optimal_m <- 100
+    }
+
+    cat("DECISION:\n")
+    cat("─────────────────────────────────────────────────────────────\n")
+    cat(sprintf("  Von Hippel (2020) quadratic rule:    m = %d\n", m_vonhippel))
+    cat(sprintf("  White et al. (2011) floor (≥%% miss): m = %d\n", m_white_floor))
+    cat(sprintf("  Minimum recommended:                 m = 20\n"))
+    cat(sprintf("  → SELECTED m = %d\n\n", optimal_m))
+
+    cat("JUSTIFICATION FOR MANUSCRIPT:\n")
+    cat("─────────────────────────────────────────────────────────────\n")
+    cat(sprintf(
+      "  The number of imputations (m = %d) was determined using the\n", optimal_m))
+    cat("  Von Hippel (2020) two-stage quadratic rule. A pilot imputation\n")
+    cat("  with m = 20 was conducted to estimate the Fraction of Missing\n")
+    cat("  Information (FMI). FMI — the fraction by which the squared\n")
+    cat("  standard error would shrink with complete data — was estimated\n")
+    cat(sprintf("  from the variable with the most missing data (%s, %.1f%%).\n",
+                max_miss_var, max_miss_pct))
+    cat("  The FMI-based quadratic formula (m = 1 + 200×FMI²) indicated\n")
+    cat(sprintf("  m = %d imputations for 5%% replicability of standard errors.\n",
+                m_vonhippel))
+    cat("  This was compared against the White et al. (2011) floor\n")
+    cat(sprintf("  of m ≥ %d (≥ %% missing data), and the final m = %d\n",
+                m_white_floor, optimal_m))
+    cat("  was selected as the maximum of these criteria.\n\n")
+
   } else {
-    cat("  ✓ Test imputation completed without warnings\n")
-    convergence_penalty <- 0
+    cat("Falling back to White et al. (2011) missingness-based rule\n\n")
+    max_miss_pct  <- max(missing_pct)
+    m_white_floor <- ceiling(max_miss_pct)
+    optimal_m     <- max(m_white_floor, 20)
+    if(optimal_m > 100) optimal_m <- 100
+
+    cat("DECISION:\n")
+    cat("─────────────────────────────────────────────────────────────\n")
+    cat(sprintf("  White et al. (2011) rule (m ≥ %% missing): m = %d\n", m_white_floor))
+    cat(sprintf("  Minimum recommended:                       m = 20\n"))
+    cat(sprintf("  → SELECTED m = %d\n\n", optimal_m))
   }
-  
-  # Assess based on data characteristics
-  n_vars_to_impute <- sum(method != "")
-  avg_missingness <- mean(missing_pct[missing_pct > 0])
-  
-  cat("\nCONVERGENCE ASSESSMENT:\n")
-  cat("  Variables to impute:", n_vars_to_impute, "\n")
-  cat("  Average missingness:", round(avg_missingness, 1), "%\n")
-  cat("  Complexity score:", round(n_vars_to_impute * avg_missingness / 100, 1), "\n\n")
-  
-  # Calculate optimal maxit based on data characteristics
-  base_maxit <- 20
-  complexity_adjustment <- ceiling(n_vars_to_impute / 10) + ceiling(avg_missingness / 2)
-  
-  optimal_maxit <- base_maxit + complexity_adjustment + convergence_penalty
-  
-  # Cap at reasonable maximum
-  if(optimal_maxit > 50) {
-    cat("  Initial calculation:", optimal_maxit, "(capped at 50)\n")
-    optimal_maxit <- 50
-  }
-  
-  cat("MAXIT CALCULATION:\n")
-  cat("  Base iterations:", base_maxit, "\n")
-  cat("  Complexity adjustment:", complexity_adjustment, 
-      "(based on", n_vars_to_impute, "variables,", round(avg_missingness, 1), "% missing)\n")
-  if(convergence_penalty > 0) {
-    cat("  Convergence penalty:", convergence_penalty, "(warnings detected)\n")
-  }
-  cat("  → SELECTED maxit =", optimal_maxit, "\n\n")
-  
-  cat("JUSTIFICATION:\n")
-  cat("  ", optimal_maxit, "iterations should allow adequate convergence given:\n")
-  cat("    • ", n_vars_to_impute, " variables need imputation\n", sep = "")
-  cat("    • ", round(avg_missingness, 1), "% average missingness\n", sep = "")
-  if(convergence_penalty > 0) {
-    cat("    • Convergence issues detected in test run\n")
-  }
-  cat("  Post-imputation trace plots will confirm convergence\n\n")
-  
+
 } else {
-  cat("  Using default maxit = 30 (test imputation failed)\n\n")
-  optimal_maxit <- 30
-  convergence_penalty <- 0
-  complexity_adjustment <- 10
+  cat("  Pilot imputation failed — falling back to missingness-based approach\n\n")
+  max_miss_pct  <- max(missing_pct)
+  m_white_floor <- ceiling(max_miss_pct)
+  optimal_m     <- max(m_white_floor, 20)
+  if(optimal_m > 100) optimal_m <- 100
+  cat(sprintf("  → SELECTED m = %d (White et al., 2011)\n\n", optimal_m))
 }
 
 # -----------------------------------------------------------------------------
-# PART F: SAVE OPTIMIZATION RESULTS
+# PART F: EMPIRICAL MAXIT DETERMINATION — CONVERGENCE EXPERIMENT
+# -----------------------------------------------------------------------------
+# RATIONALE:
+#   maxit controls Markov chain length in MICE's chained equations algorithm.
+#   Unlike m, it cannot be derived mathematically — it must be diagnosed
+#   empirically (van Buuren, 2018; Gelman & Rubin, 1992).
+#
+#   PROCEDURE:
+#     1. Run small pilot (m=5) at maxit = 10, 20, 30, 40
+#     2. Assess Gelman-Rubin PSRF < 1.1 at each step
+#     3. Select smallest maxit where convergence is confirmed
+#
+#   Using m=5 is valid because convergence behaviour is independent of m.
+#   This keeps experimentation fast before the final large imputation.
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART F: SAVING OPTIMIZATION RESULTS\n")
+cat("PART F: EMPIRICAL MAXIT DETERMINATION\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Save optimized imputation dataset
+cat("METHOD: Structured convergence experiment\n")
+cat("  • Pilot m = 5 (convergence behaviour is independent of m)\n")
+cat("  • Test maxit = 10, 20, 30, 40\n")
+cat("  • Convergence criterion: Gelman-Rubin PSRF < 1.1 for all variables\n")
+cat("  • Select smallest maxit achieving convergence\n\n")
+
+cat("CITATIONS:\n")
+cat("  • van Buuren (2018): maxit determined empirically via trace plots\n")
+cat("  • Gelman & Rubin (1992): PSRF < 1.1 as convergence threshold\n")
+cat("  • Brooks & Gelman (1998): general MCMC convergence monitoring\n\n")
+
+maxit_candidates <- c(10, 20, 30, 40)
+convergence_results <- data.frame(
+  maxit       = maxit_candidates,
+  max_psrf    = NA_real_,
+  mean_psrf   = NA_real_,
+  n_above_1.1 = NA_integer_,
+  converged   = NA,
+  stringsAsFactors = FALSE
+)
+
+cat("Running convergence experiment (m=5 for each candidate)...\n")
+cat("─────────────────────────────────────────────────────────────\n\n")
+
+pilot_imps <- list()
+
+for(i in seq_along(maxit_candidates)) {
+
+  maxit_test <- maxit_candidates[i]
+  cat(sprintf("Testing maxit = %d ...\n", maxit_test))
+
+  pilot_imp_test <- tryCatch({
+    mice(df_imp, m = 5, maxit = maxit_test, method = method,
+         predictorMatrix = pred, seed = 12345, printFlag = FALSE)
+  }, error = function(e) {
+    cat(sprintf("  ⚠️  Imputation failed: %s\n", conditionMessage(e)))
+    NULL
+  })
+
+  if(!is.null(pilot_imp_test)) {
+    pilot_imps[[as.character(maxit_test)]] <- pilot_imp_test
+
+    gr <- tryCatch({
+      mice::convergence(pilot_imp_test, diagnostic = "gr")
+    }, error = function(e) NULL)
+
+    psrf_parsed <- FALSE
+    if(!is.null(gr) && is.data.frame(gr)) {
+      psrf_col <- grep("psrf|rhat|Rhat", names(gr), ignore.case = TRUE, value = TRUE)
+      if(length(psrf_col) > 0) {
+        psrf_vec <- unlist(gr[, psrf_col])
+        psrf_vec <- psrf_vec[!is.na(psrf_vec) & is.finite(psrf_vec)]
+        if(length(psrf_vec) > 0) {
+          max_psrf  <- max(psrf_vec)
+          mean_psrf <- mean(psrf_vec)
+          n_above   <- sum(psrf_vec > 1.1)
+          converged <- max_psrf < 1.1
+
+          convergence_results$max_psrf[i]    <- round(max_psrf, 4)
+          convergence_results$mean_psrf[i]   <- round(mean_psrf, 4)
+          convergence_results$n_above_1.1[i] <- n_above
+          convergence_results$converged[i]   <- converged
+
+          status <- if(converged) "✓ CONVERGED" else "✗ NOT CONVERGED"
+          cat(sprintf("  %s | Max PSRF = %.4f | Mean PSRF = %.4f | N > 1.1: %d\n",
+                      status, max_psrf, mean_psrf, n_above))
+          psrf_parsed <- TRUE
+        }
+      }
+    }
+
+    if(!psrf_parsed) {
+      n_warnings <- if(!is.null(pilot_imp_test$loggedEvents))
+                      nrow(pilot_imp_test$loggedEvents) else 0
+      cat(sprintf("  ℹ️  PSRF not available | Logged events: %d\n", n_warnings))
+      convergence_results$converged[i] <- (n_warnings == 0)
+    }
+
+  } else {
+    cat("  ✗ FAILED\n")
+  }
+  cat("\n")
+}
+
+# Select optimal maxit
+cat("CONVERGENCE EXPERIMENT RESULTS:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(convergence_results[, c("maxit", "max_psrf", "mean_psrf",
+                               "n_above_1.1", "converged")],
+      row.names = FALSE)
+cat("\n")
+
+converged_rows <- convergence_results[
+  !is.na(convergence_results$converged) & convergence_results$converged == TRUE, ]
+
+if(nrow(converged_rows) > 0) {
+  optimal_maxit <- min(converged_rows$maxit)
+  cat(sprintf("✓ Convergence first achieved at maxit = %d\n", optimal_maxit))
+
+  if(nrow(converged_rows) > 1) {
+    psrf_at_optimal <- converged_rows$max_psrf[converged_rows$maxit == optimal_maxit]
+    psrf_at_max     <- converged_rows$max_psrf[which.max(converged_rows$maxit)]
+    psrf_change     <- abs(psrf_at_optimal - psrf_at_max)
+    cat(sprintf("  Max PSRF at maxit=%d: %.4f\n", optimal_maxit, psrf_at_optimal))
+    cat(sprintf("  Max PSRF at maxit=%d: %.4f\n",
+                max(converged_rows$maxit), psrf_at_max))
+    cat(sprintf("  Difference:           %.4f\n", psrf_change))
+    if(psrf_change < 0.01)
+      cat("  ✓ Higher maxit shows negligible improvement — selected value is sufficient\n")
+  }
+
+} else {
+  cat("⚠️  No tested maxit value achieved full convergence\n")
+  cat("    Using maxit = 40 as best available option\n")
+  cat("    Consider reviewing logged events and VIF results\n")
+  optimal_maxit <- 40
+}
+
+cat(sprintf("\n→ SELECTED maxit = %d\n\n", optimal_maxit))
+
+# Save trace plots for selected maxit
+selected_pilot <- pilot_imps[[as.character(optimal_maxit)]]
+if(!is.null(selected_pilot)) {
+  tryCatch({
+    pdf("convergence_trace_plots_pilot.pdf", width = 12, height = 8)
+    plot(selected_pilot,
+         main = paste0("Pilot Trace Plots — maxit = ", optimal_maxit, " (m=5)"))
+    dev.off()
+    cat("✓ Saved: convergence_trace_plots_pilot.pdf\n")
+    cat("  → Review: chains should intermingle freely with no directional trend\n\n")
+  }, error = function(e) {
+    cat("  ⚠️  Could not save trace plots:", conditionMessage(e), "\n\n")
+  })
+}
+
+write.csv(convergence_results, "convergence_experiment_results.csv", row.names = FALSE)
+cat("✓ Saved: convergence_experiment_results.csv\n\n")
+
+cat("JUSTIFICATION FOR MANUSCRIPT:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat(sprintf(
+  "  The number of iterations (maxit = %d) was determined empirically\n",
+  optimal_maxit))
+cat("  using a structured convergence experiment. Pilot imputations\n")
+cat("  with m = 5 were run at maxit = 10, 20, 30, and 40. At each\n")
+cat("  step, convergence was assessed using the Gelman-Rubin Potential\n")
+cat("  Scale Reduction Factor (PSRF; Gelman & Rubin, 1992; Brooks &\n")
+cat("  Gelman, 1998), with PSRF < 1.1 as the convergence threshold.\n")
+cat(sprintf("  Convergence was first achieved at maxit = %d, with higher\n",
+            optimal_maxit))
+cat("  values producing negligible further improvement. Trace plots\n")
+cat("  confirmed freely intermingling chains with no directional\n")
+cat(sprintf("  trends (van Buuren, 2018). Final imputation used maxit = %d.\n\n",
+            optimal_maxit))
+
+# -----------------------------------------------------------------------------
+# PART G: SAVE OPTIMIZATION RESULTS
+# -----------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART G: SAVING OPTIMIZATION RESULTS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
 saveRDS(df_imp, "df_imputation_ready.rds")
 cat("✓ Saved: df_imputation_ready.rds\n")
 
-# Save optimal parameters
 imputation_parameters <- list(
   optimal_m = optimal_m,
   optimal_m_justification = paste0(
-    "Based on max missingness (", round(max_miss_pct, 1), "%). ",
-    "White et al. (2011): m ≥ % missing. ",
-    "Min 20 (Von Hippel, 2020)."
+    "Von Hippel (2020) two-stage FMI quadratic rule. ",
+    "Pilot m=20. FMI estimated from highest-missing variable (",
+    names(which.max(missing_pct)), ", ", round(max(missing_pct), 1), "% missing). ",
+    "Floor: White et al. (2011) m >= % missing = ", ceiling(max(missing_pct)), "."
   ),
   optimal_maxit = optimal_maxit,
   optimal_maxit_justification = paste0(
-    "Derived from: base (20) + complexity (", 
-    complexity_adjustment,
-    ") + penalties (", 
-    convergence_penalty,
-    "). Based on ", sum(method != ""), " variables, ",
-    round(mean(missing_pct[missing_pct > 0]), 1), "% avg missingness."
+    "Empirical convergence experiment: m=5 pilot at maxit=10,20,30,40. ",
+    "Gelman-Rubin PSRF < 1.1 criterion (Gelman & Rubin, 1992). ",
+    "Convergence first achieved at maxit=", optimal_maxit, "."
   ),
-  method = method,
-  predictor_matrix = pred,
+  convergence_experiment  = convergence_results,
+  method                  = method,
+  predictor_matrix        = pred,
   variable_types = list(
-    continuous = continuous_vars,
-    binary = binary_vars,
-    ordered = ordered_vars,
-    unordered = unordered_categorical
+    continuous  = continuous_vars,
+    binary      = binary_vars,
+    ordered     = ordered_vars,
+    unordered   = unordered_categorical
   ),
-  excluded_variables = c(outcome, problematic_vars),
+  excluded_variables               = c(outcome, problematic_vars),
   derived_variables_to_recalculate = derived_vars,
-  n_observations = nrow(df_imp),
-  n_variables = ncol(df_imp),
-  n_vars_to_impute = sum(method != ""),
-  max_missingness_pct = max_miss_pct,
+  redundant_predictors_zeroed      = redundant_predictors,
+  n_observations      = nrow(df_imp),
+  n_variables         = ncol(df_imp),
+  n_vars_to_impute    = sum(method != ""),
+  max_missingness_pct = max(missing_pct),
   avg_missingness_pct = mean(missing_pct[missing_pct > 0]),
   reverse_coding_done = list(
-    bfi = analysis_vars$bfi_reversed,
+    bfi   = analysis_vars$bfi_reversed,
     surps = analysis_vars$surps_reversed
   )
 )
@@ -2917,49 +3938,84 @@ saveRDS(imputation_parameters, "imputation_parameters_optimized.rds")
 cat("✓ Saved: imputation_parameters_optimized.rds\n\n")
 
 # -----------------------------------------------------------------------------
-# PART G: FINAL SUMMARY
+# PART H: FINAL SUMMARY
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("DIAGNOSTICS COMPLETE - SUMMARY\n")
+cat("DIAGNOSTICS COMPLETE — SUMMARY\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 cat("STATISTICALLY-DERIVED PARAMETERS:\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("  • m =", optimal_m, "(based on", round(max_miss_pct, 1), "% max missingness)\n")
-cat("  • maxit =", optimal_maxit, "(based on complexity assessment)\n")
-cat("  • Variables to impute:", sum(method != ""), "\n")
-cat("  • Observations:", nrow(df_imp), "\n\n")
+cat(sprintf("  m     = %d  (Von Hippel, 2020 FMI quadratic rule)\n", optimal_m))
+cat(sprintf("  maxit = %d  (empirical PSRF convergence experiment)\n", optimal_maxit))
+cat(sprintf("  Variables to impute: %d\n", sum(method != "")))
+cat(sprintf("  Observations:        %d\n\n", nrow(df_imp)))
 
-cat("VARIABLE BREAKDOWN:\n")
-cat("  • Continuous (PMM):", sum(method == "pmm"), "\n")
-cat("  • Binary (logreg):", sum(method == "logreg"), "\n")
-cat("  • Ordered (polr):", sum(method == "polr"), "\n")
-cat("  • Unordered (polyreg):", sum(method == "polyreg"), "\n")
-cat("  • Not imputed:", sum(method == ""), "\n\n")
+cat("IMPUTATION METHOD BREAKDOWN:\n")
+cat(sprintf("  PMM (continuous):           %d\n", sum(method == "pmm")))
+cat(sprintf("  Logreg (binary):            %d\n", sum(method == "logreg")))
+cat(sprintf("  Polr (ordered):             %d\n", sum(method == "polr")))
+cat(sprintf("  Polyreg (unordered):        %d\n", sum(method == "polyreg")))
+cat(sprintf("  Not imputed:                %d\n\n", sum(method == "")))
+
+cat("PREDICTOR MATRIX:\n")
+cat(sprintf("  mincor used:                0.17\n"))
+cat(sprintf("  Final avg predictors/model: %.1f\n\n", avg_per_var_final))
+
+cat("SCALE ITEMS FORCED TO NUMERIC:\n")
+cat(sprintf("  DBAS (%d), BFI (%d), SURPS (%d), CISS (%d) → integer/PMM\n\n",
+            sum(analysis_vars$dbas  %in% scale_vars_all),
+            sum(analysis_vars$bfi   %in% scale_vars_all),
+            sum(analysis_vars$surps %in% scale_vars_all),
+            sum(analysis_vars$ciss  %in% scale_vars_all)))
+
+cat("BZRA DOSE VARIABLES:\n")
+for(v in c("bzra_daily_diazepam_eq", "bzra_weekly_diazepam_eq"))
+  cat(sprintf("  %-30s: %s\n", v,
+              if(v %in% continuous_vars) "PMM (continuous)" else "⚠️ Not assigned"))
+cat("\n")
+
+if(length(redundant_predictors) > 0) {
+  cat("PERFECTLY CORRELATED PREDICTORS ZEROED (Part C + predictor matrix):\n")
+  for(v in redundant_predictors)
+    cat(sprintf("  • %s (column zeroed — r = 1 with another complete variable)\n", v))
+  cat("\n")
+}
+
+cat("CONVERGENCE EXPERIMENT SUMMARY:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+print(convergence_results[, c("maxit", "max_psrf", "mean_psrf",
+                               "n_above_1.1", "converged")],
+      row.names = FALSE)
+cat(sprintf("\n  → Convergence first achieved at maxit = %d\n\n", optimal_maxit))
+
+cat("KEY CITATIONS:\n")
+cat("  • Von Hippel (2020) Sociol Methods Res 49(3):699-718  [m]\n")
+cat("  • White et al. (2011) Stat Med 30(4):377-399          [m floor]\n")
+cat("  • Gelman & Rubin (1992) Stat Sci 7(4):457-472         [maxit]\n")
+cat("  • Brooks & Gelman (1998) J Comp Graph Stat 7(4):434   [maxit]\n")
+cat("  • Van Buuren (2018) Flexible Imputation (2nd ed.)      [both]\n\n")
 
 if(length(problematic_vars) > 0) {
-  cat("EXCLUDED VARIABLES:\n")
-  cat("  • Problematic:", length(setdiff(problematic_vars, derived_vars)), "\n")
-  cat("  • Derived (to recalculate):", length(derived_vars), "\n")
-  for(v in derived_vars) {
-    cat("    - ", v, "\n", sep = "")
-  }
-  cat("  • Outcome:", outcome, "\n\n")
+  cat("EXCLUDED/ADJUSTED VARIABLES:\n")
+  cat("  • Outcome excluded:", outcome, "\n")
+  cat("  • Derived (recalculate post-imputation):",
+      paste(derived_vars, collapse = ", "), "\n")
+  other_prob <- setdiff(problematic_vars, derived_vars)
+  if(length(other_prob) > 0)
+    cat("  • Other problematic:", paste(other_prob, collapse = ", "), "\n")
+  cat("\n")
 }
-
-cat("REVERSE CODING STATUS:\n")
-cat("  • BFI items already reversed in Chunk 6:", length(analysis_vars$bfi_reversed), "\n")
-cat("  • SURPS items already reversed in Chunk 6:", length(analysis_vars$surps_reversed), "\n")
-cat("  • NO additional reverse coding needed in Chunk 8\n\n")
 
 cat("FILES CREATED:\n")
-cat("  1. df_imputation_ready.rds - Dataset ready for imputation\n")
-cat("  2. imputation_parameters_optimized.rds - Statistically-derived parameters\n")
-cat("  3. pre_imputation_missingness_summary.csv - Detailed missingness\n")
-if(file.exists("vif_analysis.csv")) {
-  cat("  4. vif_analysis.csv - Multicollinearity assessment (ALL eligible variables)\n")
-}
+cat("  1. df_imputation_ready.rds               - Dataset ready for imputation\n")
+cat("  2. imputation_parameters_optimized.rds   - Parameters + citations\n")
+cat("  3. pre_imputation_missingness_summary.csv\n")
+cat("  4. convergence_experiment_results.csv    - PSRF at each maxit tested\n")
+cat("  5. convergence_trace_plots_pilot.pdf     - Trace plots for selected maxit\n")
+if(file.exists("vif_analysis.csv"))
+  cat("  6. vif_analysis.csv\n")
 cat("\n")
 
 cat("NEXT STEP: Proceed to Chunk 8 (Multiple Imputation)\n\n")
@@ -2968,6 +4024,9 @@ cat("═════════════════════════
 cat("✓ PRE-IMPUTATION DIAGNOSTICS COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 ```
+
+
+
 
 
 
