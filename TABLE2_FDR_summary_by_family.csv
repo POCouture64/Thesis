@@ -1,6 +1,6 @@
 "Family","k","n_sig_raw","n_sig_fdr"
-"Behavioural",8,6,6
-"Clinical",7,1,0
+"Behavioural",8,6,5
+"Clinical",36,19,17
 "Demographics",6,0,0
-"Personality",16,2,1
-"Sleep_Adverse",18,5,3
+"Personality",17,3,1
+"Sleep_Adverse",18,6,4

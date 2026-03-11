@@ -2944,10 +2944,13 @@ cat("  • Ready for diagnostics (Chunk 7)\n\n")
 #             Gelman & Rubin (1992); Brooks & Gelman (1998)
 #==============================================================================
 
+# install.packages(c("howManyImputations", "coda"))
+
 library(mice)
 library(dplyr)
 library(ggplot2)
 library(car)
+library(coda)             # Gelman-Rubin PSRF via chainMean (convergence check)
 library(howManyImputations)
 
 cat("\n")
@@ -3214,14 +3217,20 @@ if(ncol(numeric_complete) >= 3) {
 
     if(max_cor > 0.99) {
       cat("  ⚠️  Perfect/near-perfect correlation detected (r =", round(max_cor, 3), ")\n")
-      perfect_pairs <- which(abs(cor_matrix) > 0.99 & abs(cor_matrix) < 1, arr.ind = TRUE)
+      # ── Use upper.tri to find off-diagonal pairs at any correlation ≥ 0.99 ──
+      # The previous condition (abs(cor) > 0.99 & abs(cor) < 1) incorrectly
+      # excluded pairs with r = exactly 1.000, which is the case for
+      # bzra_daily_diazepam_eq ↔ bzra_weekly_diazepam_eq (weekly = daily × 7).
+      # upper.tri() selects only the upper triangle, avoiding the diagonal
+      # (self-correlations of 1.0) and duplicate pairs.
+      # ─────────────────────────────────────────────────────────────────────
+      perfect_pairs <- which(abs(cor_matrix) >= 0.99 & upper.tri(cor_matrix), arr.ind = TRUE)
 
       # ── Identify and store redundant predictors ──────────────────────────
-      # For each perfectly correlated pair, the second variable (alphabetically
-      # later in the matrix) is flagged as redundant. It will be zeroed out as
-      # a predictor column in the predictor matrix below, preventing chain
-      # instability. Both variables can still be imputed if needed (complete
-      # variables are skipped by mice automatically).
+      # For each perfectly correlated pair, the second variable (column index)
+      # is flagged as redundant and will be zeroed as a predictor column below,
+      # preventing chain instability. Both variables can still be imputed if
+      # needed (complete variables are skipped by mice automatically).
       #
       # In this dataset the expected pair is:
       #   bzra_daily_diazepam_eq ↔ bzra_weekly_diazepam_eq
@@ -3237,7 +3246,9 @@ if(ncol(numeric_complete) >= 3) {
           v2 <- colnames(cor_matrix)[perfect_pairs[i, 2]]
           pair_key <- paste(sort(c(v1, v2)), collapse = "↔")
           if(!pair_key %in% seen_pairs) {
-            cat("       •", v1, "↔", v2, "(redundant as predictor:", v2, ")\n")
+            cat("       •", v1, "↔", v2,
+                sprintf("(r = %.4f — redundant as predictor: %s)\n",
+                        cor_matrix[perfect_pairs[i,1], perfect_pairs[i,2]], v2))
             redundant_predictors <- c(redundant_predictors, v2)
             seen_pairs <- c(seen_pairs, pair_key)
           }
@@ -3415,17 +3426,31 @@ method <- init$method
 # With large questionnaire datasets this causes chain instability.
 # quickpred() keeps only variables with meaningful correlation to the target.
 #
-# mincor = 0.17  → only predictors with |r| ≥ 0.17
+# mincor = 0.10 → only predictors with |r| ≥ 0.10
 #                 targets ~15–25 predictors per model (Van Buuren, 2018 §6.3)
+#
+# minpuc = 0.1  → exclude predictor pairs where fewer than 10% of cases
+#                 have both variables observed simultaneously.
+#                 This directly addresses within-scale block missingness:
+#                 all 21 CISS items (or 23 SURPS, 16 DBAS) are missing
+#                 together for the same respondents. Without minpuc, these
+#                 items all appear as predictors for each other, creating a
+#                 rank-deficient design matrix in the PMM linear model and
+#                 generating "dropped predictor" logged events. minpuc = 0.1
+#                 removes these low-overlap pairs from the predictor matrix
+#                 before the ridge penalty is even needed.
 # ─────────────────────────────────────────────────────────────────────────────
 
 cat("Building predictor matrix with quickpred()...\n")
-cat("  mincor = 0.17  (minimum |r| to be included as predictor)\n")
+cat("  mincor = 0.10 (minimum |r| to be included as predictor)\n")
+cat("  minpuc = 0.10 (minimum proportion of usable cases — excludes\n")
+cat("           block-missing within-scale pairs, Van Buuren, 2018 §6.3)\n")
 cat("  Target: 15–25 predictors per model (Van Buuren, 2018 §6.3)\n\n")
 
 pred <- quickpred(
   df_imp,
-  mincor = 0.17
+  mincor = 0.10,
+  minpuc = 0.10
 )
 
 # Manually remove near-perfectly correlated predictors (|r| > 0.95)
@@ -3486,7 +3511,7 @@ cat(sprintf("  Avg predictors per model: %.1f\n", avg_per_var))
 if(avg_per_var > 25)
   cat("  ⚠️  Average > 25 — consider raising mincor to 0.25\n")
 if(avg_per_var < 5)
-  cat("  ⚠️  Average < 5 — mincor may be too high, consider lowering to 0.1\n")
+  cat("  ⚠️  Average < 5 — mincor may be too high, consider lowering to 0.15\n")
 cat("\n")
 
 # ── Remove sparse categorical variables from predictor matrix ─────────────────
@@ -3561,6 +3586,274 @@ cat("  Polyreg:    ", sum(method == "polyreg"), "\n")
 cat("  Not imputed:", sum(method == ""),        "\n\n")
 
 # -----------------------------------------------------------------------------
+# PART D5: LOGGED EVENTS DIAGNOSTIC & TARGETED REDUCTION
+# -----------------------------------------------------------------------------
+# PURPOSE:
+#   mice logs events when an imputation model fails or is modified — most
+#   commonly due to collinear predictors (singular system), sparse category
+#   separation in polr/logreg, or too many predictors relative to observations.
+#   Left unaddressed, logged events mean mice is silently dropping predictors
+#   or skipping imputations, which biases results and causes non-convergence.
+#
+# PROCEDURE:
+#   1. Run a fast probe imputation (m=1, maxit=5) — cheap, just to surface events
+#   2. Parse and categorise every logged event by type
+#   3. Apply targeted fixes per event type:
+#      a) "system is computationally singular" → the named predictor column
+#         is causing linear dependence for that target; zero it in pred
+#      b) "perfect predictor" / "rank deficient" → same fix
+#      c) polr-specific failures → switch that variable to PMM as fallback
+#   4. Re-run probe to verify reduction; report before/after counts
+#   5. Pass the cleaned pred + method into all subsequent imputations
+#
+# NOTE ON ridge:
+#   mice() accepts a ridge = <small value> argument that adds a ridge penalty
+#   to stabilise near-singular systems without dropping predictors entirely.
+#   ridge = 1e-3 is the recommended starting value (van Buuren, 2018 §6.4.2).
+#   We apply this as a second-line defence alongside the predictor matrix fixes.
+# -----------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART D5: LOGGED EVENTS DIAGNOSTIC & TARGETED REDUCTION\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+# ── Helper: parse loggedEvents into a summary table ──────────────────────────
+parse_logged_events <- function(mids_obj) {
+  le <- mids_obj$loggedEvents
+  if(is.null(le) || nrow(le) == 0) return(NULL)
+
+  # loggedEvents columns: it, im, dep, meth, out
+  #   dep  = the target variable being imputed
+  #   out  = the predictor variable that caused the problem (may be "")
+  #   meth = imputation method used
+
+  le$event_type <- dplyr::case_when(
+    grepl("singular|rank.deficient|computationally singular",
+          le$out, ignore.case = TRUE)                          ~ "singular_system",
+    grepl("perfect predictor",  le$out, ignore.case = TRUE)   ~ "perfect_predictor",
+    grepl("constant",           le$out, ignore.case = TRUE)   ~ "constant_predictor",
+    le$meth %in% c("polr", "polyreg") & le$out != ""          ~ "polr_separation",
+    le$meth %in% c("polr", "polyreg") & le$out == ""          ~ "polr_fit_failure",
+    le$out != ""                                               ~ "dropped_predictor",
+    TRUE                                                       ~ "other"
+  )
+  le
+}
+
+# ── PROBE 1: baseline logged events ──────────────────────────────────────────
+cat("PROBE 1: Baseline — running m=1, maxit=5 to surface logged events...\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+probe1 <- tryCatch(
+  mice(df_imp, m = 1, maxit = 5, method = method,
+       predictorMatrix = pred, seed = 99, printFlag = FALSE,
+       ridge = 1e-3),   # ridge applied from the start as baseline stabiliser
+  error = function(e) {
+    cat("  ⚠️  Probe failed:", conditionMessage(e), "\n")
+    NULL
+  }
+)
+
+n_events_before <- 0L
+
+if(!is.null(probe1)) {
+
+  le1 <- parse_logged_events(probe1)
+
+  if(is.null(le1)) {
+    cat("  ✓ No logged events in baseline probe\n\n")
+  } else {
+    n_events_before <- nrow(le1)
+    cat(sprintf("  ⚠️  %d logged events detected\n\n", n_events_before))
+
+    # Summarise by type
+    type_summary <- le1 %>%
+      dplyr::count(event_type, name = "n") %>%
+      dplyr::arrange(dplyr::desc(n))
+
+    cat("  Event breakdown by type:\n")
+    for(r in seq_len(nrow(type_summary)))
+      cat(sprintf("    %-30s: %d\n", type_summary$event_type[r], type_summary$n[r]))
+    cat("\n")
+
+    # Most affected target variables
+    dep_summary <- le1 %>%
+      dplyr::count(dep, event_type, name = "n") %>%
+      dplyr::arrange(dplyr::desc(n)) %>%
+      head(20)
+
+    cat("  Top affected target variables (dep):\n")
+    for(r in seq_len(nrow(dep_summary)))
+      cat(sprintf("    %-30s [%-20s]: %d events\n",
+                  dep_summary$dep[r], dep_summary$event_type[r], dep_summary$n[r]))
+    cat("\n")
+
+    # Most frequently dropped predictors
+    out_summary <- le1 %>%
+      dplyr::filter(out != "") %>%
+      dplyr::count(out, name = "n") %>%
+      dplyr::arrange(dplyr::desc(n)) %>%
+      head(20)
+
+    if(nrow(out_summary) > 0) {
+      cat("  Most frequently problematic predictors (out):\n")
+      for(r in seq_len(nrow(out_summary)))
+        cat(sprintf("    %-30s: dropped/flagged %d times\n",
+                    out_summary$out[r], out_summary$n[r]))
+      cat("\n")
+    }
+
+    write.csv(le1, "logged_events_baseline.csv", row.names = FALSE)
+    cat("  ✓ Saved: logged_events_baseline.csv\n\n")
+
+    # ── FIX A: Remove problematic predictor columns ─────────────────────────
+    # Variables that repeatedly appear in the 'out' column are causing linear
+    # dependence in multiple imputation models. Zeroing their COLUMN in pred
+    # prevents them being used as predictors.
+    #
+    # CONTRAST SUFFIX HANDLING:
+    # When an ordered factor is used as a predictor in a PMM linear model,
+    # R expands it into polynomial contrasts: variable.L (linear), .Q
+    # (quadratic), .C (cubic), etc. The 'out' column in loggedEvents contains
+    # the contrast name (e.g. "stop_wdl_exp_combined.C"), but the predictor
+    # matrix column is named after the original variable ("stop_wdl_exp_combined").
+    # We strip known contrast suffixes before looking up the column name.
+    # ────────────────────────────────────────────────────────────────────────
+
+    n_fix_a <- 0L
+
+    singular_preds_raw <- le1 %>%
+      dplyr::filter(event_type %in% c("singular_system",
+                                       "perfect_predictor",
+                                       "constant_predictor",
+                                       "dropped_predictor")) %>%
+      dplyr::filter(out != "") %>%
+      dplyr::count(out, name = "n") %>%
+      dplyr::filter(n >= 3) %>%
+      dplyr::pull(out)
+
+    # Strip polynomial contrast suffixes (.L, .Q, .C, .^4, .^5 etc.)
+    singular_preds <- unique(
+      sub("\\.(L|Q|C|(\\^[0-9]+))$", "", singular_preds_raw)
+    )
+
+    if(length(singular_preds) > 0) {
+      cat("  FIX A: Zeroing frequently-problematic predictor columns\n")
+      cat("         (flagged ≥ 3 times; contrast suffixes stripped for lookup)\n")
+      for(var in singular_preds) {
+        if(var %in% colnames(pred)) {
+          pred[, var] <- 0
+          n_fix_a <- n_fix_a + 1L
+          # Report original flagged name alongside the column zeroed
+          flagged_as <- singular_preds_raw[sub("\\.(L|Q|C|(\\^[0-9]+))$", "",
+                                               singular_preds_raw) == var]
+          cat(sprintf("    ✓ Zeroed column: %-30s  (flagged as: %s)\n",
+                      var, paste(unique(flagged_as), collapse = ", ")))
+        }
+      }
+      cat("\n")
+    } else {
+      cat("  FIX A: No columns meet the ≥ 3 events threshold — no zeroing applied\n\n")
+    }
+
+    # ── FIX B: Switch polr failures to PMM ──────────────────────────────────
+    # polr (ordered logistic regression) is the most fragile mice method.
+    # When a polr model fails to fit (separation, insufficient variation),
+    # mice logs an event and produces poor imputations. Switching those
+    # specific variables to PMM is a valid and common fallback:
+    #   - PMM is more robust and non-parametric
+    #   - Ordinal structure is approximately preserved by matching observed donors
+    #   - Van Buuren (2018) endorses PMM as fallback for problematic ordered vars
+    # ────────────────────────────────────────────────────────────────────────
+
+    polr_failures <- le1 %>%
+      dplyr::filter(event_type %in% c("polr_fit_failure", "polr_separation")) %>%
+      dplyr::pull(dep) %>%
+      unique()
+
+    n_fix_b <- 0L
+
+    if(length(polr_failures) > 0) {
+      cat("  FIX B: Switching repeatedly-failing polr variables to PMM\n")
+      cat("         (polr fit failure / separation detected in probe)\n")
+      for(var in polr_failures) {
+        if(var %in% names(method) && method[var] == "polr") {
+          method[var] <- "pmm"
+          n_fix_b <- n_fix_b + 1L
+          cat(sprintf("    ✓ %s: polr → pmm\n", var))
+        }
+      }
+      cat("\n")
+    } else {
+      cat("  FIX B: No polr-specific failures detected\n\n")
+    }
+
+    # ── PROBE 2: verify improvement ─────────────────────────────────────────
+    if(n_fix_a > 0 || n_fix_b > 0) {
+
+      cat("  PROBE 2: Re-running after fixes to verify improvement...\n")
+
+      probe2 <- tryCatch(
+        mice(df_imp, m = 1, maxit = 5, method = method,
+             predictorMatrix = pred, seed = 99, printFlag = FALSE,
+             ridge = 1e-3),
+        error = function(e) {
+          cat("  ⚠️  Probe 2 failed:", conditionMessage(e), "\n")
+          NULL
+        }
+      )
+
+      if(!is.null(probe2)) {
+        le2 <- parse_logged_events(probe2)
+        n_events_after <- if(is.null(le2)) 0L else nrow(le2)
+
+        cat(sprintf("\n  LOGGED EVENTS: %d → %d  (reduction: %d, %.0f%%)\n\n",
+                    n_events_before, n_events_after,
+                    n_events_before - n_events_after,
+                    100 * (n_events_before - n_events_after) / max(n_events_before, 1)))
+
+        if(!is.null(le2) && nrow(le2) > 0) {
+          cat("  Remaining events after fixes:\n")
+          remaining_types <- le2 %>%
+            dplyr::count(event_type, name = "n") %>%
+            dplyr::arrange(dplyr::desc(n))
+          for(r in seq_len(nrow(remaining_types)))
+            cat(sprintf("    %-30s: %d\n",
+                        remaining_types$event_type[r], remaining_types$n[r]))
+          cat("\n")
+          write.csv(le2, "logged_events_after_fixes.csv", row.names = FALSE)
+          cat("  ✓ Saved: logged_events_after_fixes.csv\n\n")
+        }
+      }
+
+    } else {
+      cat("  ℹ️  No structural fixes applied (ridge = 1e-3 is the active stabiliser)\n\n")
+    }
+  }
+
+} else {
+  cat("  ℹ️  Probe skipped — will apply ridge = 1e-3 in all imputations\n\n")
+}
+
+# ── Update final predictor matrix stats after D5 fixes ───────────────────────
+n_used_final      <- sum(pred)
+avg_per_var_final <- round(n_used_final / nrow(pred), 1)
+
+cat("UPDATED METHOD SUMMARY (after D5 fixes):\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  PMM:        ", sum(method == "pmm"),     "\n")
+cat("  Logreg:     ", sum(method == "logreg"),  "\n")
+cat("  Polr:       ", sum(method == "polr"),    "\n")
+cat("  Polyreg:    ", sum(method == "polyreg"), "\n")
+cat("  Not imputed:", sum(method == ""),        "\n")
+cat(sprintf("  Predictor matrix: %d active slots, avg %.1f/model\n\n",
+            n_used_final, avg_per_var_final))
+
+cat("NOTE: ridge = 1e-3 will be applied in all subsequent mice() calls.\n")
+cat("  This adds a small ridge penalty to stabilise near-singular systems\n")
+cat("  (van Buuren, 2018 §6.4.2). Results are minimally affected at this value.\n\n")
+
+# -----------------------------------------------------------------------------
 # PART E: STATISTICAL DERIVATION OF m — VON HIPPEL (2020) TWO-STAGE PROCEDURE
 # -----------------------------------------------------------------------------
 
@@ -3588,7 +3881,8 @@ cat("  Running pilot imputation (m=20, maxit=20)...\n")
 
 pilot_imp <- tryCatch({
   mice(df_imp, m = 20, maxit = 20, method = method,
-       predictorMatrix = pred, seed = 12345, printFlag = FALSE)
+       predictorMatrix = pred, seed = 12345, printFlag = FALSE,
+       ridge = 1e-3)
 }, error = function(e) {
   cat("  ⚠️  Pilot imputation failed:", conditionMessage(e), "\n")
   NULL
@@ -3764,7 +4058,8 @@ for(i in seq_along(maxit_candidates)) {
 
   pilot_imp_test <- tryCatch({
     mice(df_imp, m = 5, maxit = maxit_test, method = method,
-         predictorMatrix = pred, seed = 12345, printFlag = FALSE)
+         predictorMatrix = pred, seed = 12345, printFlag = FALSE,
+         ridge = 1e-3)
   }, error = function(e) {
     cat(sprintf("  ⚠️  Imputation failed: %s\n", conditionMessage(e)))
     NULL
@@ -3773,39 +4068,103 @@ for(i in seq_along(maxit_candidates)) {
   if(!is.null(pilot_imp_test)) {
     pilot_imps[[as.character(maxit_test)]] <- pilot_imp_test
 
-    gr <- tryCatch({
-      mice::convergence(pilot_imp_test, diagnostic = "gr")
-    }, error = function(e) NULL)
+    # ── Compute PSRF directly from mids$chainMean ────────────────────────────
+    # mice::convergence(diagnostic = "gr") stacks all iterations into one
+    # data frame with no reliable iteration label in some mice versions.
+    #
+    # We use mids$chainMean directly — a 3-D array [n_imputed_vars, maxit, m].
+    # The m chains are treated as parallel MCMC chains and PSRF is computed
+    # at the FINAL iteration only using coda::gelman.diag().
+    #
+    # IMPORTANT — why we do NOT use <<- inside tryCatch:
+    # <<- inside a tryCatch body searches the enclosing call stack, which is
+    # unreliable when scripts are sourced or run inside knitr/RMarkdown chunks
+    # (each chunk runs in its own environment). Instead we return computed
+    # values as a named list and assign to convergence_results OUTSIDE the
+    # tryCatch, where the assignment is always in the correct frame.
+    # ─────────────────────────────────────────────────────────────────────────
 
-    psrf_parsed <- FALSE
-    if(!is.null(gr) && is.data.frame(gr)) {
-      psrf_col <- grep("psrf|rhat|Rhat", names(gr), ignore.case = TRUE, value = TRUE)
-      if(length(psrf_col) > 0) {
-        psrf_vec <- unlist(gr[, psrf_col])
-        psrf_vec <- psrf_vec[!is.na(psrf_vec) & is.finite(psrf_vec)]
-        if(length(psrf_vec) > 0) {
-          max_psrf  <- max(psrf_vec)
-          mean_psrf <- mean(psrf_vec)
-          n_above   <- sum(psrf_vec > 1.1)
-          converged <- max_psrf < 1.1
+    psrf_result <- tryCatch({
 
-          convergence_results$max_psrf[i]    <- round(max_psrf, 4)
-          convergence_results$mean_psrf[i]   <- round(mean_psrf, 4)
-          convergence_results$n_above_1.1[i] <- n_above
-          convergence_results$converged[i]   <- converged
+      if(!requireNamespace("coda", quietly = TRUE))
+        stop("coda package required — install with: install.packages('coda')")
 
-          status <- if(converged) "✓ CONVERGED" else "✗ NOT CONVERGED"
-          cat(sprintf("  %s | Max PSRF = %.4f | Mean PSRF = %.4f | N > 1.1: %d\n",
-                      status, max_psrf, mean_psrf, n_above))
-          psrf_parsed <- TRUE
+      cm <- pilot_imp_test$chainMean  # [n_vars, maxit, m]
+
+      if(is.null(cm) || length(dim(cm)) != 3)
+        stop("chainMean has unexpected structure")
+
+      n_imp_vars <- dim(cm)[1]
+      n_iter     <- dim(cm)[2]
+      n_chains   <- dim(cm)[3]
+
+      cat(sprintf("  Computing PSRF from chainMean [%d vars × %d iters × %d chains]...\n",
+                  n_imp_vars, n_iter, n_chains))
+
+      if(n_chains < 2)
+        stop("Need m ≥ 2 chains for Gelman-Rubin (m=5 used here, so this should not occur)")
+
+      psrf_vec <- numeric(n_imp_vars)
+
+      for(v in seq_len(n_imp_vars)) {
+
+        chain_list <- lapply(seq_len(n_chains), function(j) {
+          vals <- cm[v, , j]
+          if(all(is.na(vals)) || var(vals, na.rm = TRUE) < 1e-15) return(NULL)
+          coda::mcmc(vals)
+        })
+        chain_list <- Filter(Negate(is.null), chain_list)
+
+        if(length(chain_list) < 2) {
+          psrf_vec[v] <- 1.0   # constant chain = converged by definition
+          next
         }
-      }
-    }
 
-    if(!psrf_parsed) {
+        gd <- tryCatch(
+          coda::gelman.diag(coda::mcmc.list(chain_list),
+                            autoburnin = FALSE,
+                            multivariate = FALSE),
+          error = function(e) NULL
+        )
+
+        psrf_vec[v] <- if(!is.null(gd)) gd$psrf[1, 1] else NA_real_
+      }
+
+      psrf_vec  <- psrf_vec[!is.na(psrf_vec) & is.finite(psrf_vec)]
+      max_psrf  <- max(psrf_vec)
+      mean_psrf <- mean(psrf_vec)
+      n_above   <- sum(psrf_vec > 1.1)
+      converged <- max_psrf < 1.1
+
+      list(success   = TRUE,
+           max_psrf  = round(max_psrf,  4),
+           mean_psrf = round(mean_psrf, 4),
+           n_above   = n_above,
+           n_vars    = length(psrf_vec),
+           converged = converged)
+
+    }, error = function(e) {
+      list(success = FALSE, error_msg = conditionMessage(e))
+    })
+
+    # ── Assign results outside tryCatch — safe in all execution contexts ──────
+    if(isTRUE(psrf_result$success)) {
+
+      convergence_results$max_psrf[i]    <- psrf_result$max_psrf
+      convergence_results$mean_psrf[i]   <- psrf_result$mean_psrf
+      convergence_results$n_above_1.1[i] <- psrf_result$n_above
+      convergence_results$converged[i]   <- psrf_result$converged
+
+      status <- if(psrf_result$converged) "✓ CONVERGED" else "✗ NOT CONVERGED"
+      cat(sprintf("  %s | Max PSRF = %.4f | Mean PSRF = %.4f | N > 1.1: %d / %d\n",
+                  status, psrf_result$max_psrf, psrf_result$mean_psrf,
+                  psrf_result$n_above, psrf_result$n_vars))
+
+    } else {
+      cat(sprintf("  ⚠️  PSRF calculation failed: %s\n", psrf_result$error_msg))
       n_warnings <- if(!is.null(pilot_imp_test$loggedEvents))
                       nrow(pilot_imp_test$loggedEvents) else 0
-      cat(sprintf("  ℹ️  PSRF not available | Logged events: %d\n", n_warnings))
+      cat(sprintf("      Falling back to logged events: %d\n", n_warnings))
       convergence_results$converged[i] <- (n_warnings == 0)
     }
 
@@ -3923,6 +4282,8 @@ imputation_parameters <- list(
   excluded_variables               = c(outcome, problematic_vars),
   derived_variables_to_recalculate = derived_vars,
   redundant_predictors_zeroed      = redundant_predictors,
+  ridge_penalty                    = 1e-3,
+  logged_events_before_fixes       = n_events_before,
   n_observations      = nrow(df_imp),
   n_variables         = ncol(df_imp),
   n_vars_to_impute    = sum(method != ""),
@@ -3960,7 +4321,8 @@ cat(sprintf("  Polyreg (unordered):        %d\n", sum(method == "polyreg")))
 cat(sprintf("  Not imputed:                %d\n\n", sum(method == "")))
 
 cat("PREDICTOR MATRIX:\n")
-cat(sprintf("  mincor used:                0.17\n"))
+cat(sprintf("  mincor used:                0.10\n"))
+cat(sprintf("  minpuc used:                0.10 (excludes block-missing within-scale pairs)\n"))
 cat(sprintf("  Final avg predictors/model: %.1f\n\n", avg_per_var_final))
 
 cat("SCALE ITEMS FORCED TO NUMERIC:\n")
@@ -3975,6 +4337,12 @@ for(v in c("bzra_daily_diazepam_eq", "bzra_weekly_diazepam_eq"))
   cat(sprintf("  %-30s: %s\n", v,
               if(v %in% continuous_vars) "PMM (continuous)" else "⚠️ Not assigned"))
 cat("\n")
+
+cat("LOGGED EVENTS REDUCTION (Part D5):\n")
+cat(sprintf("  ridge penalty applied:          1e-3 (all mice calls)\n"))
+cat(sprintf("  Baseline logged events (probe): %d\n", n_events_before))
+cat(sprintf("  Fix A — predictor columns zeroed based on events\n"))
+cat(sprintf("  Fix B — polr failures switched to PMM\n\n"))
 
 if(length(redundant_predictors) > 0) {
   cat("PERFECTLY CORRELATED PREDICTORS ZEROED (Part C + predictor matrix):\n")
@@ -4014,8 +4382,10 @@ cat("  2. imputation_parameters_optimized.rds   - Parameters + citations\n")
 cat("  3. pre_imputation_missingness_summary.csv\n")
 cat("  4. convergence_experiment_results.csv    - PSRF at each maxit tested\n")
 cat("  5. convergence_trace_plots_pilot.pdf     - Trace plots for selected maxit\n")
+cat("  6. logged_events_baseline.csv            - Raw logged events before fixes\n")
+cat("  7. logged_events_after_fixes.csv         - Remaining events after D5 fixes\n")
 if(file.exists("vif_analysis.csv"))
-  cat("  6. vif_analysis.csv\n")
+  cat("  8. vif_analysis.csv\n")
 cat("\n")
 
 cat("NEXT STEP: Proceed to Chunk 8 (Multiple Imputation)\n\n")
@@ -4029,15 +4399,27 @@ cat("═════════════════════════
 
 
 
-
 ## Multiple Imputation
 ```{r}
 #==============================================================================
 # CHUNK 8: MULTIPLE IMPUTATION
 #==============================================================================
-# Purpose: Perform multiple imputation using MICE with optimized parameters
-# Outputs: Imputed datasets with convergence diagnostics
+# Purpose: Perform multiple imputation using MICE with parameters optimized
+#          in Chunk 7, then run comprehensive statistical verification
+# Outputs: Imputed datasets + full diagnostic report
+#
+# CHUNK 7 PARAMETERS CARRIED FORWARD:
+#   ridge = 1e-3              (stability stabiliser, van Buuren §6.4.2)
+#   mincor = 0.10, minpuc = 0.10  (predictor matrix)
+#   stop_wdl_exp_combined     (zeroed as predictor — cubic contrast singularity)
+#   6 polr vars → PMM         (Fix B switches from Chunk 7 D5)
+#   bzra_weekly_diazepam_eq   (zeroed as predictor — r = 1 with daily)
 #==============================================================================
+
+library(mice)
+library(dplyr)
+library(ggplot2)
+library(coda)
 
 cat("\n")
 cat("═══════════════════════════════════════════════════════════════\n")
@@ -4049,15 +4431,16 @@ if(!file.exists("df_imputation_ready.rds") || !file.exists("imputation_parameter
   stop("ERROR: Required files not found. Please run Chunk 7 first.")
 }
 
-df_imp <- readRDS("df_imputation_ready.rds")
+df_imp     <- readRDS("df_imputation_ready.rds")
 imp_params <- readRDS("imputation_parameters_optimized.rds")
 
 cat("✓ Loaded imputation-ready dataset\n")
 cat("  Dimensions:", nrow(df_imp), "rows ×", ncol(df_imp), "columns\n\n")
 
-cat("✓ Loaded optimized parameters\n")
-cat("  m =", imp_params$optimal_m, "\n")
+cat("✓ Loaded optimized parameters from Chunk 7\n")
+cat("  m     =", imp_params$optimal_m, "\n")
 cat("  maxit =", imp_params$optimal_maxit, "\n")
+cat("  ridge =", imp_params$ridge_penalty, "\n")
 cat("  Variables to impute:", imp_params$n_vars_to_impute, "\n\n")
 
 # -----------------------------------------------------------------------------
@@ -4071,68 +4454,79 @@ cat("═════════════════════════
 cat("IMPUTATION PARAMETERS:\n")
 cat("─────────────────────────────────────────────────────────────\n")
 cat("  Number of imputations (m):", imp_params$optimal_m, "\n")
-cat("  Iterations (maxit):", imp_params$optimal_maxit, "\n")
-cat("  Variables to impute:", imp_params$n_vars_to_impute, "\n")
+cat("  Iterations (maxit):       ", imp_params$optimal_maxit, "\n")
+cat("  Ridge penalty:            ", imp_params$ridge_penalty, "\n")
+cat("  Variables to impute:      ", imp_params$n_vars_to_impute, "\n")
 cat("  Imputation methods:\n")
-cat("    • PMM:", sum(imp_params$method == "pmm"), "variables\n")
-cat("    • Logreg:", sum(imp_params$method == "logreg"), "variables\n")
-cat("    • Polr:", sum(imp_params$method == "polr"), "variables\n")
+cat("    • PMM:    ", sum(imp_params$method == "pmm"),     "variables\n")
+cat("    • Logreg: ", sum(imp_params$method == "logreg"),  "variables\n")
+cat("    • Polr:   ", sum(imp_params$method == "polr"),    "variables\n")
 cat("    • Polyreg:", sum(imp_params$method == "polyreg"), "variables\n\n")
 
 cat("JUSTIFICATION:\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("  m:", imp_params$optimal_m_justification, "\n\n")
-cat("  maxit:", imp_params$optimal_maxit_justification, "\n\n")
+cat("  m:     ", imp_params$optimal_m_justification,    "\n\n")
+cat("  maxit: ", imp_params$optimal_maxit_justification, "\n\n")
 
-# Set seed for reproducibility
-set.seed(12345)
+cat("CHUNK 7 ADJUSTMENTS APPLIED:\n")
+cat("─────────────────────────────────────────────────────────────\n")
 
+if(!is.null(imp_params$redundant_predictors_zeroed) &&
+   length(imp_params$redundant_predictors_zeroed) > 0) {
+  for(v in imp_params$redundant_predictors_zeroed)
+    cat(sprintf("  • %-35s zeroed as predictor (r = 1)\n", v))
+}
+
+# Report polr → PMM switches (method has "pmm" for vars originally polr)
+polr_to_pmm <- names(imp_params$method)[imp_params$method == "pmm" &
+  names(imp_params$method) %in% imp_params$variable_types$ordered]
+if(length(polr_to_pmm) > 0) {
+  cat(sprintf("  • %d ordered vars switched polr → PMM (Fix B, Chunk 7 D5):\n",
+              length(polr_to_pmm)))
+  for(v in polr_to_pmm) cat(sprintf("      %s\n", v))
+}
+cat("\n")
+
+# Run MICE
 cat("Starting imputation...\n")
 cat("This may take several minutes...\n\n")
 
 start_time <- Sys.time()
 
-# Run MICE
 imp_final <- mice(
-  data = df_imp,
-  m = imp_params$optimal_m,
-  maxit = imp_params$optimal_maxit,
-  method = imp_params$method,
-  predictorMatrix = imp_params$predictor_matrix,
-  seed = 12345,
-  printFlag = TRUE
+  data             = df_imp,
+  m                = imp_params$optimal_m,
+  maxit            = imp_params$optimal_maxit,
+  method           = imp_params$method,
+  predictorMatrix  = imp_params$predictor_matrix,
+  ridge            = imp_params$ridge_penalty,
+  seed             = 12345,
+  printFlag        = TRUE
 )
 
-end_time <- Sys.time()
+end_time     <- Sys.time()
 elapsed_time <- difftime(end_time, start_time, units = "mins")
 
-cat("\n")
-cat("✓ Imputation complete!\n")
+cat("\n✓ Imputation complete!\n")
 cat("  Time elapsed:", round(as.numeric(elapsed_time), 2), "minutes\n\n")
 
-# Check for convergence issues
-if(nrow(imp_final$loggedEvents) > 0) {
-  cat("⚠️  LOGGED EVENTS DURING IMPUTATION:\n")
+# Logged events check (safe NULL handling)
+n_logged <- if(!is.null(imp_final$loggedEvents)) nrow(imp_final$loggedEvents) else 0L
+
+if(n_logged > 0) {
+  cat("⚠️  LOGGED EVENTS DURING FINAL IMPUTATION:\n")
   cat("─────────────────────────────────────────────────────────────\n")
-  cat("  Total events:", nrow(imp_final$loggedEvents), "\n")
-  
-  # Summarize by type
+  cat("  Total events:", n_logged, "\n")
   event_summary <- table(imp_final$loggedEvents$out)
-  cat("\n  Event types:\n")
-  for(event in names(event_summary)) {
+  cat("  Event types:\n")
+  for(event in names(event_summary))
     cat("    •", event, ":", event_summary[event], "times\n")
-  }
-  
-  # Show first few events
   cat("\n  First 10 events:\n")
   print(head(imp_final$loggedEvents, 10))
-  cat("\n")
-  
-  # Save logged events
   write.csv(imp_final$loggedEvents, "imputation_logged_events.csv", row.names = FALSE)
   cat("  ✓ Saved: imputation_logged_events.csv\n\n")
 } else {
-  cat("✓ No logged events - imputation completed without issues\n\n")
+  cat("✓ No logged events — imputation completed without issues\n\n")
 }
 
 # -----------------------------------------------------------------------------
@@ -4143,42 +4537,109 @@ cat("═════════════════════════
 cat("PART B: CONVERGENCE DIAGNOSTICS\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("PURPOSE: Verify that imputation chains have converged\n")
-cat("  • Trace plots should show random scatter (no trends)\n")
-cat("  • Chains should mix well (overlap)\n")
-cat("  • No systematic patterns indicate good convergence\n\n")
+# ── B1. Gelman-Rubin PSRF on final imputation chains ─────────────────────────
+# Mirrors the exact procedure from Chunk 7 Part F, now applied to the full
+# m = optimal_m run. PSRF < 1.1 for all variables confirms the final
+# imputation has converged, not just the pilot.
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Select variables to plot (representative sample)
+cat("B1. Gelman-Rubin PSRF on final imputation\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  Computing PSRF from chainMean [vars × maxit × m]...\n")
+
+psrf_final <- tryCatch({
+
+  cm         <- imp_final$chainMean
+  n_imp_vars <- dim(cm)[1]
+  n_iter     <- dim(cm)[2]
+  n_chains   <- dim(cm)[3]
+
+  psrf_vec  <- numeric(n_imp_vars)
+  var_names <- dimnames(cm)[[1]]
+
+  for(v in seq_len(n_imp_vars)) {
+    chain_list <- lapply(seq_len(n_chains), function(j) {
+      vals <- cm[v, , j]
+      if(all(is.na(vals)) || var(vals, na.rm = TRUE) < 1e-15) return(NULL)
+      coda::mcmc(vals)
+    })
+    chain_list <- Filter(Negate(is.null), chain_list)
+    if(length(chain_list) < 2) { psrf_vec[v] <- 1.0; next }
+    gd <- tryCatch(
+      coda::gelman.diag(coda::mcmc.list(chain_list),
+                        autoburnin = FALSE, multivariate = FALSE),
+      error = function(e) NULL)
+    psrf_vec[v] <- if(!is.null(gd)) gd$psrf[1, 1] else NA_real_
+  }
+
+  psrf_vec <- setNames(psrf_vec, var_names)
+  psrf_vec
+
+}, error = function(e) {
+  cat("  ⚠️  PSRF calculation failed:", conditionMessage(e), "\n")
+  NULL
+})
+
+if(!is.null(psrf_final)) {
+  psrf_clean <- psrf_final[!is.na(psrf_final) & is.finite(psrf_final)]
+  max_psrf   <- max(psrf_clean)
+  mean_psrf  <- mean(psrf_clean)
+  n_above    <- sum(psrf_clean > 1.1)
+  converged  <- max_psrf < 1.1
+
+  cat(sprintf("  Max PSRF:    %.4f %s\n", max_psrf,
+              if(max_psrf < 1.1) "✓" else "⚠️"))
+  cat(sprintf("  Mean PSRF:   %.4f\n", mean_psrf))
+  cat(sprintf("  N > 1.1:     %d / %d\n", n_above, length(psrf_clean)))
+
+  if(converged) {
+    cat("  ✓ CONVERGED — all chains settled (PSRF < 1.1)\n\n")
+  } else {
+    cat("  ⚠️  NOT FULLY CONVERGED — consider increasing maxit\n\n")
+    cat("  Variables with PSRF > 1.1:\n")
+    high_psrf_vars <- sort(psrf_clean[psrf_clean > 1.1], decreasing = TRUE)
+    for(v in seq_along(high_psrf_vars))
+      cat(sprintf("    %2d. %-35s PSRF = %.4f\n",
+                  v, names(high_psrf_vars)[v], high_psrf_vars[v]))
+    cat("\n")
+  }
+
+  psrf_df <- data.frame(
+    variable = names(psrf_clean),
+    psrf     = round(psrf_clean, 4),
+    converged = psrf_clean < 1.1
+  ) %>% arrange(desc(psrf))
+
+  write.csv(psrf_df, "final_imputation_psrf.csv", row.names = FALSE)
+  cat("  ✓ Saved: final_imputation_psrf.csv\n\n")
+}
+
+# ── B2. Trace plots ───────────────────────────────────────────────────────────
+cat("B2. Trace plots\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
 vars_to_plot <- c(
-  # Demographics
   "age", "education", "income",
-  # Health
   "phq2_score", "osss_3_score", "med_quant",
-  # Personality - highest missingness
-  "ciss11", "ciss21", "surps17", "surps23",
-  # Adverse effects
+  "ciss11", "ciss21", "surps17", "surps23_r",
   "side_effects_1", "safety_1", "dependence_1",
-  # COM-B
   "motivation_1", "desires_1", "capability"
 )
+vars_to_plot <- vars_to_plot[
+  vars_to_plot %in% names(imp_params$method[imp_params$method != ""])]
 
-# Filter to only variables that were actually imputed
-vars_to_plot <- vars_to_plot[vars_to_plot %in% names(imp_params$method[imp_params$method != ""])]
-
-cat("Creating trace plots for", length(vars_to_plot), "representative variables...\n\n")
-
-# Create trace plots
-png("convergence_trace_plots.png", width = 12, height = 16, units = "in", res = 300)
-plot(imp_final, vars_to_plot)
-dev.off()
-
-cat("✓ Saved: convergence_trace_plots.png\n\n")
-
-cat("INTERPRETATION GUIDE:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-cat("  ✓ GOOD: Lines overlap, random variation, no trends\n")
-cat("  ⚠️  CONCERN: Chains separated, trends visible, non-mixing\n")
-cat("  → If convergence issues seen, may need to increase maxit\n\n")
+cat("  Plotting", length(vars_to_plot), "representative variables...\n")
+tryCatch({
+  pdf("convergence_trace_plots_final.pdf", width = 14, height = 10)
+  plot(imp_final, y = vars_to_plot,
+       main = paste0("Final Imputation Trace Plots (m=",
+                     imp_params$optimal_m, ", maxit=",
+                     imp_params$optimal_maxit, ")"))
+  dev.off()
+  cat("  ✓ Saved: convergence_trace_plots_final.pdf\n")
+  cat("    → Chains should intermingle freely with no directional trends\n\n")
+}, error = function(e)
+  cat("  ⚠️  Trace plot failed:", conditionMessage(e), "\n\n"))
 
 # -----------------------------------------------------------------------------
 # PART C: DISTRIBUTION DIAGNOSTICS
@@ -4188,94 +4649,448 @@ cat("═════════════════════════
 cat("PART C: DISTRIBUTION DIAGNOSTICS\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("PURPOSE: Check if imputed values have reasonable distributions\n")
-cat("  • Red = observed data\n")
-cat("  • Blue = imputed data\n")
-cat("  • Distributions should be similar\n\n")
+cat("PURPOSE: Verify imputed values have plausible distributions.\n")
+cat("  Red = observed, Blue = imputed. Distributions should be similar\n")
+cat("  under MAR; systematic differences are not necessarily wrong but\n")
+cat("  warrant scrutiny (van Buuren, 2018 §6.6).\n\n")
 
-# Select continuous variables for plotting
-continuous_to_plot <- vars_to_plot[vars_to_plot %in% imp_params$variable_types$continuous]
+continuous_to_plot <- vars_to_plot[
+  vars_to_plot %in% imp_params$variable_types$continuous]
 
 if(length(continuous_to_plot) > 0) {
-  cat("Creating density plots for", length(continuous_to_plot), "variables...\n\n")
-  
-  vars_for_density <- head(continuous_to_plot, 8)  # Plot up to 8 variables
-  
-  formula_str <- paste("~", paste(vars_for_density, collapse = " + "))
-  density_formula <- as.formula(formula_str)
-  
-  png("imputation_density_plots.png", width = 14, height = 12, units = "in", res = 300)
-  print(densityplot(imp_final, density_formula))
-  dev.off()
-  
-  cat("✓ Saved: imputation_density_plots.png\n")
-  cat("  Variables plotted:", paste(vars_for_density, collapse = ", "), "\n\n")
-  
+  vars_for_density <- head(continuous_to_plot, 8)
+  cat("  Density plots for:", paste(vars_for_density, collapse = ", "), "\n")
+  tryCatch({
+    pdf("imputation_density_plots.pdf", width = 14, height = 10)
+    print(densityplot(imp_final,
+                      as.formula(paste("~", paste(vars_for_density, collapse = " + ")))))
+    dev.off()
+    cat("  ✓ Saved: imputation_density_plots.pdf\n\n")
+  }, error = function(e)
+    cat("  ⚠️  Density plot failed:", conditionMessage(e), "\n\n"))
 } else {
-  cat("No continuous variables to plot\n\n")
+  cat("  No continuous variables available from plot list\n\n")
 }
 
-cat("INTERPRETATION GUIDE:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-cat("  ✓ GOOD: Imputed (blue) similar to observed (red)\n")
-cat("  ⚠️  CONCERN: Very different distributions\n")
-cat("  → Large differences may indicate MAR assumption violated\n\n")
+# Strip plots for categorical variables
+ordered_to_plot <- vars_to_plot[vars_to_plot %in% imp_params$variable_types$ordered]
+if(length(ordered_to_plot) > 0) {
+  vars_for_strip <- head(ordered_to_plot, 6)
+  tryCatch({
+    pdf("imputation_stripplots.pdf", width = 12, height = 8)
+    print(stripplot(imp_final,
+                    as.formula(paste("~", paste(vars_for_strip, collapse = " + "))),
+                    pch = 20, cex = 0.6))
+    dev.off()
+    cat("  ✓ Saved: imputation_stripplots.pdf\n\n")
+  }, error = function(e)
+    cat("  ⚠️  Stripplot failed:", conditionMessage(e), "\n\n"))
+}
 
 # -----------------------------------------------------------------------------
-# PART D: IMPUTATION QUALITY ASSESSMENT
+# PART D: STATISTICAL VERIFICATION
+# -----------------------------------------------------------------------------
+# These checks confirm the imputation is statistically sound before analysis.
+# Each check targets a specific failure mode.
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART D: IMPUTATION QUALITY ASSESSMENT\n")
+cat("PART D: STATISTICAL VERIFICATION\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("Calculating imputation diagnostics...\n\n")
+# Convenience: list of all imputed datasets
+all_imp_list <- lapply(seq_len(imp_params$optimal_m),
+                       function(i) mice::complete(imp_final, i))
 
-# Get imputed values statistics
-complete_data <- complete(imp_final, action = "long", include = TRUE)
+# ── D1. Completeness check ────────────────────────────────────────────────────
+cat("D1. Completeness check\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  PURPOSE: Confirm every imputed variable has zero missing values\n")
+cat("           in every completed dataset. Any remaining NAs indicate\n")
+cat("           a variable that was supposed to be imputed but was not.\n\n")
 
-# Calculate mean and SD for imputed vs observed for key variables
-quality_assessment <- data.frame()
+imp_vars <- names(imp_params$method[imp_params$method != ""])
+completeness_fails <- character()
 
-for(var in continuous_to_plot) {
-  if(var %in% names(df_imp)) {
-    # Observed values
-    obs_mean <- mean(df_imp[[var]], na.rm = TRUE)
-    obs_sd <- sd(df_imp[[var]], na.rm = TRUE)
-    
-    # Imputed values (from all imputations)
-    imputed_only <- complete_data[complete_data$.imp > 0 & is.na(df_imp[[var]][complete_data$.id]), ]
-    
-    if(nrow(imputed_only) > 0) {
-      imp_mean <- mean(imputed_only[[var]], na.rm = TRUE)
-      imp_sd <- sd(imputed_only[[var]], na.rm = TRUE)
-      
-      quality_assessment <- rbind(quality_assessment, data.frame(
-        variable = var,
-        observed_mean = obs_mean,
-        observed_sd = obs_sd,
-        imputed_mean = imp_mean,
-        imputed_sd = imp_sd,
-        mean_diff = imp_mean - obs_mean,
-        sd_ratio = imp_sd / obs_sd
-      ))
-    }
+for(i in seq_along(all_imp_list)) {
+  d <- all_imp_list[[i]]
+  for(var in imp_vars) {
+    if(var %in% names(d) && anyNA(d[[var]]))
+      completeness_fails <- c(completeness_fails,
+                              sprintf("  Imputation %d, variable: %s", i, var))
   }
 }
 
-if(nrow(quality_assessment) > 0) {
-  cat("QUALITY METRICS (Continuous Variables):\n")
-  cat("─────────────────────────────────────────────────────────────\n")
-  print(quality_assessment, row.names = FALSE, digits = 3)
+if(length(completeness_fails) == 0) {
+  cat("  ✓ PASS — All", length(imp_vars), "imputed variables are complete",
+      "across all", imp_params$optimal_m, "datasets\n\n")
+} else {
+  cat(sprintf("  ✗ FAIL — %d incompleteness issues detected:\n",
+              length(completeness_fails)))
+  for(msg in head(completeness_fails, 20)) cat("   ", msg, "\n")
   cat("\n")
-  
-  write.csv(quality_assessment, "imputation_quality_assessment.csv", row.names = FALSE)
-  cat("✓ Saved: imputation_quality_assessment.csv\n\n")
-  
-  cat("INTERPRETATION:\n")
-  cat("  • mean_diff close to 0 = good agreement\n")
-  cat("  • sd_ratio close to 1.0 = similar variability\n")
-  cat("  • Large deviations may indicate issues\n\n")
+}
+
+# ── D2. Range preservation check (PMM) ───────────────────────────────────────
+cat("D2. Range preservation check (PMM variables)\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  PURPOSE: PMM imputes by matching observed donors, so imputed\n")
+cat("           values MUST lie within the observed range. Values\n")
+cat("           outside this range indicate a bug in the PMM donor\n")
+cat("           selection (should not occur under correct setup).\n\n")
+
+pmm_vars      <- names(imp_params$method[imp_params$method == "pmm"])
+pmm_vars      <- pmm_vars[pmm_vars %in% names(df_imp)]
+# ── Only check truly numeric variables — Fix B switches some ordered factors
+# to PMM, but they remain factor class in df_imp. min/max are not meaningful
+# for factors and will error. Restrict to is.numeric() only.
+pmm_vars      <- pmm_vars[sapply(df_imp[pmm_vars], is.numeric)]
+range_fails   <- character()
+range_summary <- data.frame()
+
+for(var in pmm_vars) {
+  if(!var %in% names(df_imp)) next
+  obs_vals <- df_imp[[var]][!is.na(df_imp[[var]])]
+  if(length(obs_vals) == 0) next
+  obs_min <- min(obs_vals); obs_max <- max(obs_vals)
+
+  all_imp_vals <- unlist(lapply(all_imp_list, function(d) {
+    orig_na <- is.na(df_imp[[var]])
+    if(sum(orig_na) == 0) return(NULL)
+    d[[var]][orig_na]
+  }))
+
+  if(length(all_imp_vals) == 0) next
+
+  imp_min <- min(all_imp_vals); imp_max <- max(all_imp_vals)
+  out_of_range <- sum(all_imp_vals < obs_min | all_imp_vals > obs_max)
+
+  range_summary <- rbind(range_summary, data.frame(
+    variable      = var,
+    obs_min       = obs_min,
+    obs_max       = obs_max,
+    imp_min       = imp_min,
+    imp_max       = imp_max,
+    n_out_of_range = out_of_range
+  ))
+
+  if(out_of_range > 0)
+    range_fails <- c(range_fails,
+                     sprintf("%-35s obs [%.1f, %.1f]  imp [%.1f, %.1f]  n_OOB=%d",
+                             var, obs_min, obs_max, imp_min, imp_max, out_of_range))
+}
+
+if(length(range_fails) == 0) {
+  cat("  ✓ PASS — All PMM imputed values lie within observed ranges\n\n")
+} else {
+  cat(sprintf("  ⚠️  %d PMM variables have out-of-range imputed values:\n",
+              length(range_fails)))
+  for(msg in range_fails) cat("    ", msg, "\n")
+  cat("\n")
+}
+
+# ── D3. Mean / SD comparison (observed vs imputed) ───────────────────────────
+cat("D3. Observed vs imputed mean / SD comparison\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  PURPOSE: Under MAR the imputed and observed distributions\n")
+cat("           should be broadly similar. Large standardised mean\n")
+cat("           differences (|SMD| > 0.5) flag potential MNAR bias\n")
+cat("           or miscoded variables and merit review.\n\n")
+
+# Use scale items + key continuous variables that have missingness
+# Restrict to numeric only — Fix B polr→PMM vars are factors and will
+# cause errors in mean/var/sd calls downstream.
+vars_for_qc <- names(imp_params$method[imp_params$method == "pmm"])
+vars_for_qc <- vars_for_qc[vars_for_qc %in% names(df_imp)]
+vars_for_qc <- vars_for_qc[sapply(df_imp[vars_for_qc], is.numeric)]
+vars_for_qc <- vars_for_qc[colSums(is.na(df_imp[, vars_for_qc, drop = FALSE])) > 0]
+
+quality_df <- data.frame()
+
+for(var in vars_for_qc) {
+  obs_vals <- df_imp[[var]][!is.na(df_imp[[var]])]
+  if(length(obs_vals) < 5) next
+
+  # Pool imputed values across all m datasets (only originally-missing cells)
+  orig_na <- is.na(df_imp[[var]])
+  if(sum(orig_na) == 0) next
+
+  imp_vals <- unlist(lapply(all_imp_list, function(d) d[[var]][orig_na]))
+
+  obs_mean <- mean(obs_vals);   obs_sd <- sd(obs_vals)
+  imp_mean <- mean(imp_vals);   imp_sd <- sd(imp_vals)
+  pooled_sd <- sqrt((obs_sd^2 + imp_sd^2) / 2)
+  smd <- if(pooled_sd > 0) (imp_mean - obs_mean) / pooled_sd else 0
+
+  quality_df <- rbind(quality_df, data.frame(
+    variable     = var,
+    n_missing    = sum(orig_na),
+    obs_mean     = round(obs_mean, 3),
+    obs_sd       = round(obs_sd,   3),
+    imp_mean     = round(imp_mean, 3),
+    imp_sd       = round(imp_sd,   3),
+    mean_diff    = round(imp_mean - obs_mean, 3),
+    sd_ratio     = round(imp_sd / obs_sd,     3),
+    abs_smd      = round(abs(smd),            3),
+    flag         = if(abs(smd) > 0.5) "⚠️ REVIEW" else "✓"
+  ))
+}
+
+if(nrow(quality_df) > 0) {
+  flagged <- quality_df[quality_df$flag == "⚠️ REVIEW", ]
+  ok      <- quality_df[quality_df$flag == "✓", ]
+
+  cat(sprintf("  Variables assessed: %d\n", nrow(quality_df)))
+  cat(sprintf("  ✓ Acceptable (|SMD| ≤ 0.5): %d\n", nrow(ok)))
+  cat(sprintf("  ⚠️  Review (|SMD| > 0.5):    %d\n\n", nrow(flagged)))
+
+  if(nrow(flagged) > 0) {
+    cat("  FLAGGED VARIABLES:\n")
+    print(flagged[, c("variable","n_missing","obs_mean","imp_mean",
+                      "obs_sd","imp_sd","abs_smd")],
+          row.names = FALSE, digits = 3)
+    cat("\n")
+  }
+
+  cat("  SUMMARY STATISTICS (all assessed variables):\n")
+  cat(sprintf("    Median |SMD|:  %.3f\n", median(quality_df$abs_smd)))
+  cat(sprintf("    Max |SMD|:     %.3f\n", max(quality_df$abs_smd)))
+  cat(sprintf("    Median SD ratio: %.3f\n", median(quality_df$sd_ratio)))
+  cat(sprintf("    Max SD ratio:    %.3f\n\n", max(quality_df$sd_ratio)))
+
+  write.csv(quality_df, "imputation_quality_assessment.csv", row.names = FALSE)
+  cat("  ✓ Saved: imputation_quality_assessment.csv\n\n")
+}
+
+# ── D4. Between-imputation variance (relative variance increase) ─────────────
+cat("D4. Between-imputation variance stability\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  PURPOSE: Rubin's rules decompose variance into within-imputation\n")
+cat("           (W) and between-imputation (B) components. If B >> W\n")
+cat("           for many variables, m may be too small or chains\n")
+cat("           have not mixed. We compute the relative increase in\n")
+cat("           variance (RIV = B/W) for continuous imputed variables.\n\n")
+
+riv_df <- data.frame()
+
+for(var in vars_for_qc[vars_for_qc %in% names(df_imp)]) {
+  orig_na <- is.na(df_imp[[var]])
+  if(sum(orig_na) < 5) next
+
+  # Mean per imputation (among originally missing cells)
+  imp_means <- sapply(all_imp_list, function(d) mean(d[[var]][orig_na], na.rm = TRUE))
+  # Variance within each imputation
+  imp_vars  <- sapply(all_imp_list, function(d) var( d[[var]][orig_na], na.rm = TRUE))
+
+  m   <- length(imp_means)
+  W   <- mean(imp_vars)                          # within-imputation variance
+  B   <- var(imp_means)                          # between-imputation variance
+  RIV <- if(W > 0) B / W else NA_real_           # relative increase in variance
+
+  riv_df <- rbind(riv_df, data.frame(
+    variable = var,
+    W        = round(W,   4),
+    B        = round(B,   4),
+    RIV      = round(RIV, 4),
+    flag     = if(!is.na(RIV) && RIV > 1.0) "⚠️ HIGH B" else "✓"
+  ))
+}
+
+if(nrow(riv_df) > 0) {
+  flagged_riv <- riv_df[!is.na(riv_df$flag) & riv_df$flag == "⚠️ HIGH B", ]
+  cat(sprintf("  Variables assessed: %d\n", nrow(riv_df)))
+  cat(sprintf("  ✓ Stable (RIV ≤ 1.0): %d\n", nrow(riv_df) - nrow(flagged_riv)))
+  cat(sprintf("  ⚠️  High B/W (RIV > 1): %d\n", nrow(flagged_riv)))
+  cat(sprintf("  Median RIV: %.4f\n", median(riv_df$RIV, na.rm = TRUE)))
+  cat(sprintf("  Max RIV:    %.4f\n\n", max(riv_df$RIV, na.rm = TRUE)))
+
+  if(nrow(flagged_riv) > 0) {
+    cat("  HIGH RIV VARIABLES (B > W — consider increasing m):\n")
+    print(flagged_riv %>% arrange(desc(RIV)) %>% head(10),
+          row.names = FALSE)
+    cat("\n")
+  }
+
+  write.csv(riv_df %>% arrange(desc(RIV)),
+            "imputation_variance_decomposition.csv", row.names = FALSE)
+  cat("  ✓ Saved: imputation_variance_decomposition.csv\n\n")
+}
+
+# ── D5. Fraction of Missing Information (FMI) per variable ───────────────────
+cat("D5. Fraction of Missing Information (FMI) per variable\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  PURPOSE: FMI quantifies how much additional variance each\n")
+cat("           variable's estimates carry due to missingness.\n")
+cat("           FMI = (B + B/m) / (W + B + B/m)\n")
+cat("           High FMI (> 0.5) means estimates for that variable\n")
+cat("           are heavily influenced by the imputation model.\n\n")
+
+fmi_df <- data.frame()
+
+for(var in vars_for_qc[vars_for_qc %in% names(df_imp)]) {
+  orig_na <- is.na(df_imp[[var]])
+  if(sum(orig_na) < 5) next
+
+  imp_means <- sapply(all_imp_list, function(d) mean(d[[var]][orig_na], na.rm = TRUE))
+  imp_vars  <- sapply(all_imp_list, function(d) var( d[[var]][orig_na], na.rm = TRUE))
+
+  m  <- length(imp_means)
+  W  <- mean(imp_vars)
+  B  <- var(imp_means)
+  T_var <- W + B + B / m
+  FMI   <- if(T_var > 0) (B + B / m) / T_var else NA_real_
+
+  fmi_df <- rbind(fmi_df, data.frame(
+    variable   = var,
+    pct_missing = round(100 * sum(orig_na) / nrow(df_imp), 1),
+    FMI        = round(FMI, 3),
+    flag       = if(!is.na(FMI) && FMI > 0.5) "⚠️ HIGH" else "✓"
+  ))
+}
+
+if(nrow(fmi_df) > 0) {
+  high_fmi <- fmi_df[!is.na(fmi_df$flag) & fmi_df$flag == "⚠️ HIGH", ]
+  cat(sprintf("  Variables assessed: %d\n", nrow(fmi_df)))
+  cat(sprintf("  Median FMI: %.3f\n", median(fmi_df$FMI, na.rm = TRUE)))
+  cat(sprintf("  Max FMI:    %.3f\n", max(fmi_df$FMI, na.rm = TRUE)))
+  cat(sprintf("  High FMI (> 0.5): %d variables\n\n", nrow(high_fmi)))
+
+  cat("  TOP 15 VARIABLES BY FMI:\n")
+  print(fmi_df %>% arrange(desc(FMI)) %>% head(15) %>%
+          select(variable, pct_missing, FMI, flag),
+        row.names = FALSE)
+  cat("\n")
+
+  write.csv(fmi_df %>% arrange(desc(FMI)),
+            "imputation_fmi_per_variable.csv", row.names = FALSE)
+  cat("  ✓ Saved: imputation_fmi_per_variable.csv\n\n")
+}
+
+# ── D6. Categorical distribution preservation ─────────────────────────────────
+cat("D6. Categorical distribution preservation\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  PURPOSE: For polr/PMM-imputed ordered variables, check that\n")
+cat("           the imputed category proportions are plausible\n")
+cat("           relative to the observed proportions.\n\n")
+
+ordered_imp_vars <- names(imp_params$method[
+  imp_params$method %in% c("polr", "pmm") &
+  names(imp_params$method) %in% imp_params$variable_types$ordered
+])
+ordered_imp_vars <- ordered_imp_vars[
+  ordered_imp_vars %in% names(df_imp) &
+  sapply(df_imp[ordered_imp_vars], function(x) sum(is.na(x))) > 0
+]
+
+cat_check_df <- data.frame()
+
+for(var in ordered_imp_vars) {
+  orig_na  <- is.na(df_imp[[var]])
+  obs_vals <- df_imp[[var]][!orig_na]
+  if(length(obs_vals) == 0) next
+
+  imp_vals <- unlist(lapply(all_imp_list, function(d) d[[var]][orig_na]))
+
+  obs_props <- prop.table(table(obs_vals))
+  imp_props <- prop.table(table(imp_vals))
+  all_levs  <- union(names(obs_props), names(imp_props))
+
+  max_diff <- max(abs(
+    sapply(all_levs, function(lv)
+      (if(lv %in% names(imp_props)) imp_props[lv] else 0) -
+      (if(lv %in% names(obs_props)) obs_props[lv] else 0))
+  ))
+
+  cat_check_df <- rbind(cat_check_df, data.frame(
+    variable  = var,
+    n_missing = sum(orig_na),
+    n_levels  = length(all_levs),
+    max_prop_diff = round(max_diff, 3),
+    flag = if(max_diff > 0.2) "⚠️ REVIEW" else "✓"
+  ))
+}
+
+if(nrow(cat_check_df) > 0) {
+  flagged_cat <- cat_check_df[cat_check_df$flag == "⚠️ REVIEW", ]
+  cat(sprintf("  Ordered variables assessed: %d\n", nrow(cat_check_df)))
+  cat(sprintf("  ✓ Proportions stable (max diff ≤ 0.20): %d\n",
+              nrow(cat_check_df) - nrow(flagged_cat)))
+  cat(sprintf("  ⚠️  Large proportion shift (> 0.20):      %d\n\n",
+              nrow(flagged_cat)))
+  if(nrow(flagged_cat) > 0) {
+    cat("  FLAGGED VARIABLES:\n")
+    print(flagged_cat, row.names = FALSE)
+    cat("\n")
+  }
+  write.csv(cat_check_df, "imputation_categorical_check.csv", row.names = FALSE)
+  cat("  ✓ Saved: imputation_categorical_check.csv\n\n")
+} else {
+  cat("  No ordered variables with missingness to check\n\n")
+}
+
+# ── D7. Intra-scale correlation preservation ──────────────────────────────────
+cat("D7. Intra-scale correlation preservation\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  PURPOSE: Items within the same scale (CISS, SURPS, DBAS) should\n")
+cat("           remain highly correlated after imputation. A large drop\n")
+cat("           in within-scale r suggests the imputation model broke\n")
+cat("           the latent structure (e.g. due to minpuc removing too\n")
+cat("           many within-scale predictors).\n\n")
+
+scale_pairs <- list(
+  CISS  = paste0("ciss",  1:21),
+  SURPS = c(paste0("surps",  c(1,4,7,13,20,23), "_r"),
+            paste0("surps",  setdiff(1:23, c(1,4,7,13,20,23)))),
+  DBAS  = paste0("dbas_", 1:16),
+  BFI   = c("reserved_r","lazy_r","relaxed_r","few_interests_r","find_fault_r",
+            setdiff(c("outgoing","trusting","thorough","nervous","imaginative"),
+                    c("reserved_r","lazy_r","relaxed_r","few_interests_r","find_fault_r")))
+)
+
+cor_check_df <- data.frame()
+
+for(scale_name in names(scale_pairs)) {
+  items <- scale_pairs[[scale_name]]
+  items <- items[items %in% names(df_imp)]
+  if(length(items) < 3) next
+
+  # Observed correlation (complete cases only)
+  obs_cc <- df_imp[complete.cases(df_imp[, items]), items]
+  if(nrow(obs_cc) < 30) next
+  obs_cor <- mean(abs(cor(obs_cc, use = "complete.obs")[upper.tri(
+    cor(obs_cc, use = "complete.obs"))]))
+
+  # Average across imputed datasets
+  imp_cors <- sapply(all_imp_list, function(d) {
+    c_mat <- cor(d[, items], use = "complete.obs")
+    mean(abs(c_mat[upper.tri(c_mat)]))
+  })
+  imp_cor <- mean(imp_cors)
+  cor_drop <- obs_cor - imp_cor
+
+  cor_check_df <- rbind(cor_check_df, data.frame(
+    scale       = scale_name,
+    n_items     = length(items),
+    obs_mean_r  = round(obs_cor, 3),
+    imp_mean_r  = round(imp_cor, 3),
+    r_drop      = round(cor_drop, 3),
+    flag        = if(cor_drop > 0.1) "⚠️ DROP" else "✓"
+  ))
+}
+
+if(nrow(cor_check_df) > 0) {
+  cat("  Scale-level correlation summary:\n")
+  print(cor_check_df, row.names = FALSE)
+  flagged_cor <- cor_check_df[cor_check_df$flag == "⚠️ DROP", ]
+  if(nrow(flagged_cor) > 0) {
+    cat(sprintf("\n  ⚠️  %d scale(s) show r drop > 0.1 — review minpuc setting\n",
+                nrow(flagged_cor)))
+  } else {
+    cat("\n  ✓ Within-scale correlations preserved across all scales\n")
+  }
+  cat("\n")
+  write.csv(cor_check_df, "imputation_scale_correlation_check.csv", row.names = FALSE)
+  cat("  ✓ Saved: imputation_scale_correlation_check.csv\n\n")
 }
 
 # -----------------------------------------------------------------------------
@@ -4286,86 +5101,47 @@ cat("═════════════════════════
 cat("PART E: RECALCULATING DERIVED VARIABLES\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-if(!is.null(imp_params$derived_variables_to_recalculate) && 
+# ── Correct approach: modify the list of completed datasets ──────────────────
+# The mids object itself cannot store extra variables cleanly.
+# We work on all_imp_list (already extracted above) and add derived vars there.
+# ─────────────────────────────────────────────────────────────────────────────
+
+if(!is.null(imp_params$derived_variables_to_recalculate) &&
    length(imp_params$derived_variables_to_recalculate) > 0) {
-  
-  cat("Variables to recalculate:\n")
-  for(var in imp_params$derived_variables_to_recalculate) {
+
+  cat("Variables to recalculate post-imputation:\n")
+  for(var in imp_params$derived_variables_to_recalculate)
     cat("  •", var, "\n")
-  }
   cat("\n")
-  
-  # Recalculate n_health_conditions for each imputed dataset
-  cat("Recalculating n_health_conditions for all", imp_params$optimal_m, "imputations...\n")
-  
-  for(i in 1:imp_params$optimal_m) {
-    # Get the i-th imputed dataset
-    imp_data <- complete(imp_final, i)
-    
-    # Recalculate n_health_conditions
-    imp_data$n_health_conditions <- imp_data$n_physical_conditions + 
-                                     imp_data$n_ment_conditions + 
-                                     imp_data$n_sleep_conditions
-    
-    # Put it back into the mids object
-    imp_final$data <- imp_data
-    
-    # Store in the appropriate slot
-    if(i == 1) {
-      # Initialize the storage
-      imp_final$data$n_health_conditions <- imp_data$n_health_conditions
+
+  cat("Recalculating for all", imp_params$optimal_m, "imputed datasets...\n")
+
+  for(i in seq_along(all_imp_list)) {
+    d <- all_imp_list[[i]]
+
+    if(all(c("n_physical_conditions","n_ment_conditions","n_sleep_conditions")
+           %in% names(d))) {
+      all_imp_list[[i]]$n_health_conditions <-
+        d$n_physical_conditions + d$n_ment_conditions + d$n_sleep_conditions
     }
   }
-  
-  # Add n_health_conditions to all complete datasets
-  for(i in 1:imp_params$optimal_m) {
-    imp_data <- complete(imp_final, i)
-    imp_data$n_health_conditions <- imp_data$n_physical_conditions + 
-                                     imp_data$n_ment_conditions + 
-                                     imp_data$n_sleep_conditions
-    
-    # Store this modified dataset
-    if(i == 1) {
-      all_imputed <- list(imp_data)
-    } else {
-      all_imputed[[i]] <- imp_data
-    }
-  }
-  
-  cat("✓ Recalculated n_health_conditions for all imputations\n\n")
-  
-  # Verify calculation
-  cat("VERIFICATION:\n")
-  cat("─────────────────────────────────────────────────────────────\n")
-  imp_sample <- all_imputed[[1]]
-  n_checks <- sum(imp_sample$n_health_conditions == 
-                   (imp_sample$n_physical_conditions + 
-                    imp_sample$n_ment_conditions + 
-                    imp_sample$n_sleep_conditions))
-  
-  cat("  Checked first imputation:\n")
-  cat("  Correct calculations:", n_checks, "/", nrow(imp_sample), "\n")
-  if(n_checks == nrow(imp_sample)) {
-    cat("  ✓ All values correctly calculated\n\n")
+
+  # Verify
+  d1 <- all_imp_list[[1]]
+  n_correct <- sum(
+    d1$n_health_conditions ==
+    (d1$n_physical_conditions + d1$n_ment_conditions + d1$n_sleep_conditions),
+    na.rm = TRUE)
+
+  if(n_correct == nrow(d1)) {
+    cat("  ✓ Verified: n_health_conditions correct in all",
+        nrow(d1), "rows (imputation 1)\n\n")
   } else {
-    cat("  ⚠️  Some values may be incorrect - investigate!\n\n")
+    cat("  ⚠️  Mismatch in", nrow(d1) - n_correct, "rows — investigate\n\n")
   }
-  
-  # Save modified imputation object
-  saveRDS(all_imputed, "imputed_datasets_list.rds")
-  cat("✓ Saved: imputed_datasets_list.rds\n")
-  cat("  (List of", length(all_imputed), "complete datasets with n_health_conditions)\n\n")
-  
+
 } else {
-  cat("No derived variables to recalculate\n\n")
-  
-  # Save imputed datasets as list
-  all_imputed <- list()
-  for(i in 1:imp_params$optimal_m) {
-    all_imputed[[i]] <- complete(imp_final, i)
-  }
-  saveRDS(all_imputed, "imputed_datasets_list.rds")
-  cat("✓ Saved: imputed_datasets_list.rds\n\n")
+  cat("  No derived variables to recalculate\n\n")
 }
 
 # -----------------------------------------------------------------------------
@@ -4376,127 +5152,161 @@ cat("═════════════════════════
 cat("PART F: ADDING OUTCOME VARIABLE BACK\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Load original dataset to get outcome
 if(file.exists("SIMOA_analysis.rds")) {
   SIMOA_original <- readRDS("SIMOA_analysis.rds")
-  outcome_var <- imp_params$excluded_variables[grep("scrn_stopped_bzra", 
-                                                     imp_params$excluded_variables)]
-  
-  if(length(outcome_var) > 0 && outcome_var %in% names(SIMOA_original)) {
-    cat("Adding outcome variable:", outcome_var, "\n")
-    
+
+  # Find outcome from excluded_variables (first non-derived entry)
+  outcome_var <- imp_params$excluded_variables[
+    !imp_params$excluded_variables %in%
+      c(imp_params$derived_variables_to_recalculate, "n_health_conditions")
+  ]
+  outcome_var <- outcome_var[1]
+
+  if(!is.na(outcome_var) && outcome_var %in% names(SIMOA_original)) {
     outcome_data <- SIMOA_original[[outcome_var]]
-    
-    # Add outcome to each imputed dataset
-    for(i in 1:length(all_imputed)) {
-      all_imputed[[i]][[outcome_var]] <- outcome_data
-    }
-    
-    cat("✓ Outcome variable added to all", length(all_imputed), "datasets\n\n")
-    
-    # Verify
-    cat("VERIFICATION:\n")
-    cat("  Outcome distribution in first imputation:\n")
-    print(table(all_imputed[[1]][[outcome_var]], useNA = "ifany"))
+
+    for(i in seq_along(all_imp_list))
+      all_imp_list[[i]][[outcome_var]] <- outcome_data
+
+    cat("✓ Outcome variable added:", outcome_var, "\n")
+    cat("  Distribution:\n")
+    print(table(all_imp_list[[1]][[outcome_var]], useNA = "ifany"))
     cat("\n")
-    
-    # Save final datasets
-    saveRDS(all_imputed, "imputed_datasets_final.rds")
-    cat("✓ Saved: imputed_datasets_final.rds\n")
-    cat("  (Complete datasets ready for analysis)\n\n")
-    
   } else {
     cat("⚠️  Outcome variable not found in original dataset\n\n")
-    saveRDS(all_imputed, "imputed_datasets_final.rds")
   }
 } else {
-  cat("⚠️  Original dataset not found - cannot add outcome\n\n")
-  saveRDS(all_imputed, "imputed_datasets_final.rds")
+  cat("⚠️  SIMOA_analysis.rds not found — outcome not added\n\n")
 }
 
-# Save the mids object as well
-saveRDS(imp_final, "mice_imputation_object.rds")
-cat("✓ Saved: mice_imputation_object.rds\n")
-cat("  (For use with mice pooling functions)\n\n")
-
 # -----------------------------------------------------------------------------
-# PART G: FINAL SUMMARY
+# PART G: SAVE OUTPUTS
 # -----------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("IMPUTATION COMPLETE - SUMMARY\n")
+cat("PART G: SAVING OUTPUTS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+saveRDS(imp_final,    "mice_imputation_object.rds")
+saveRDS(all_imp_list, "imputed_datasets_final.rds")
+
+cat("✓ Saved: mice_imputation_object.rds\n")
+cat("  (mids object — use with mice::pool() for analysis)\n")
+cat("✓ Saved: imputed_datasets_final.rds\n")
+cat("  (List of", length(all_imp_list), "complete datasets with all variables)\n\n")
+
+# -----------------------------------------------------------------------------
+# PART H: FINAL SUMMARY
+# -----------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("IMPUTATION COMPLETE — SUMMARY\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 cat("IMPUTATION SPECIFICATIONS:\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("  Observations:", nrow(df_imp), "\n")
-cat("  Variables imputed:", imp_params$n_vars_to_impute, "\n")
-cat("  Number of imputations (m):", imp_params$optimal_m, "\n")
-cat("  Iterations (maxit):", imp_params$optimal_maxit, "\n")
-cat("  Time elapsed:", round(as.numeric(elapsed_time), 2), "minutes\n\n")
+cat("  Observations:             ", nrow(df_imp), "\n")
+cat("  Variables imputed:        ", imp_params$n_vars_to_impute, "\n")
+cat("  m (imputations):          ", imp_params$optimal_m, "\n")
+cat("  maxit (iterations):       ", imp_params$optimal_maxit, "\n")
+cat("  Ridge penalty:            ", imp_params$ridge_penalty, "\n")
+cat("  Time elapsed:             ", round(as.numeric(elapsed_time), 2), "minutes\n\n")
 
 cat("IMPUTATION METHODS:\n")
-cat("  PMM (continuous):", sum(imp_params$method == "pmm"), "variables\n")
-cat("  Logreg (binary):", sum(imp_params$method == "logreg"), "variables\n")
-cat("  Polr (ordered):", sum(imp_params$method == "polr"), "variables\n")
-cat("  Polyreg (unordered):", sum(imp_params$method == "polyreg"), "variables\n\n")
+cat("  PMM (continuous):  ", sum(imp_params$method == "pmm"),     "\n")
+cat("  Logreg (binary):   ", sum(imp_params$method == "logreg"),  "\n")
+cat("  Polr (ordered):    ", sum(imp_params$method == "polr"),    "\n")
+cat("  Polyreg (unordered):", sum(imp_params$method == "polyreg"), "\n\n")
 
-cat("POST-PROCESSING:\n")
-if(length(imp_params$derived_variables_to_recalculate) > 0) {
-  cat("  ✓ Derived variables recalculated:", 
-      paste(imp_params$derived_variables_to_recalculate, collapse = ", "), "\n")
-}
-cat("  ✓ Outcome variable added back\n")
-cat("  ✓ Final datasets complete and ready for analysis\n\n")
+cat("STATISTICAL VERIFICATION SUMMARY:\n")
+cat("─────────────────────────────────────────────────────────────\n")
 
-cat("CONVERGENCE STATUS:\n")
-if(nrow(imp_final$loggedEvents) == 0) {
-  cat("  ✓ No convergence issues detected\n")
-} else {
-  cat("  ⚠️", nrow(imp_final$loggedEvents), "logged events\n")
-  cat("     Review convergence_trace_plots.png and imputation_logged_events.csv\n")
+# Convergence
+if(!is.null(psrf_final)) {
+  psrf_clean2 <- psrf_final[!is.na(psrf_final) & is.finite(psrf_final)]
+  conv_status <- if(max(psrf_clean2) < 1.1) "✓ PASS" else "⚠️  FAIL"
+  cat(sprintf("  D1. Convergence (PSRF):          %s  max=%.4f mean=%.4f\n",
+              conv_status, max(psrf_clean2), mean(psrf_clean2)))
 }
+
+# Completeness
+comp_status <- if(length(completeness_fails) == 0) "✓ PASS" else "⚠️  FAIL"
+cat(sprintf("  D2. Completeness:                %s\n", comp_status))
+
+# Range
+range_status <- if(length(range_fails) == 0) "✓ PASS" else "⚠️  REVIEW"
+cat(sprintf("  D3. PMM range preservation:      %s\n", range_status))
+
+# SMD
+if(nrow(quality_df) > 0) {
+  smd_status <- if(sum(quality_df$flag == "⚠️ REVIEW") == 0) "✓ PASS" else
+    sprintf("⚠️  %d vars flagged", sum(quality_df$flag == "⚠️ REVIEW"))
+  cat(sprintf("  D4. Mean/SD (|SMD| ≤ 0.5):       %s\n", smd_status))
+}
+
+# RIV
+if(nrow(riv_df) > 0) {
+  riv_status <- if(sum(riv_df$flag == "⚠️ HIGH B", na.rm=TRUE) == 0) "✓ PASS" else
+    sprintf("⚠️  %d vars flagged", sum(riv_df$flag == "⚠️ HIGH B", na.rm=TRUE))
+  cat(sprintf("  D5. Between-imputation variance: %s\n", riv_status))
+}
+
+# FMI
+if(nrow(fmi_df) > 0)
+  cat(sprintf("  D6. FMI (median / max):          %.3f / %.3f\n",
+              median(fmi_df$FMI, na.rm=TRUE), max(fmi_df$FMI, na.rm=TRUE)))
+
+# Categorical
+if(nrow(cat_check_df) > 0) {
+  cat_status <- if(nrow(flagged_cat) == 0) "✓ PASS" else
+    sprintf("⚠️  %d vars flagged", nrow(flagged_cat))
+  cat(sprintf("  D7. Categorical proportions:     %s\n", cat_status))
+}
+
+# Scale correlations
+if(nrow(cor_check_df) > 0) {
+  cor_status <- if(nrow(cor_check_df[cor_check_df$flag == "⚠️ DROP",]) == 0)
+    "✓ PASS" else "⚠️  REVIEW"
+  cat(sprintf("  D8. Intra-scale correlations:    %s\n", cor_status))
+}
+
 cat("\n")
+cat("LOGGED EVENTS:\n")
+if(n_logged == 0) {
+  cat("  ✓ None — imputation completed cleanly\n\n")
+} else {
+  cat(sprintf("  ⚠️  %d events — review imputation_logged_events.csv\n\n", n_logged))
+}
 
 cat("FILES CREATED:\n")
-cat("  1. mice_imputation_object.rds - MICE mids object\n")
-cat("  2. imputed_datasets_list.rds - List of complete datasets (with n_health_conditions)\n")
-cat("  3. imputed_datasets_final.rds - List of complete datasets (with outcome)\n")
-cat("  4. convergence_trace_plots.png - Convergence diagnostics\n")
-cat("  5. imputation_density_plots.png - Distribution comparisons\n")
-cat("  6. imputation_quality_assessment.csv - Quality metrics\n")
-if(nrow(imp_final$loggedEvents) > 0) {
-  cat("  7. imputation_logged_events.csv - Logged events during imputation\n")
-}
+cat("  1.  mice_imputation_object.rds           - mids object for pooling\n")
+cat("  2.  imputed_datasets_final.rds           - List of complete datasets\n")
+cat("  3.  convergence_trace_plots_final.pdf    - Trace plots\n")
+cat("  4.  imputation_density_plots.pdf         - Observed vs imputed densities\n")
+cat("  5.  imputation_stripplots.pdf            - Ordered variable stripplots\n")
+cat("  6.  final_imputation_psrf.csv            - PSRF per variable\n")
+cat("  7.  imputation_quality_assessment.csv    - Obs vs imp mean/SD/SMD\n")
+cat("  8.  imputation_variance_decomposition.csv - W, B, RIV per variable\n")
+cat("  9.  imputation_fmi_per_variable.csv      - FMI per variable\n")
+cat("  10. imputation_categorical_check.csv     - Ordered variable proportions\n")
+cat("  11. imputation_scale_correlation_check.csv - Within-scale r preservation\n")
+if(n_logged > 0)
+  cat("  12. imputation_logged_events.csv        - Logged events during imputation\n")
+
 cat("\n")
-
-cat("DATASET STRUCTURE:\n")
-cat("  Each imputed dataset contains:\n")
-cat("    • Original variables:", ncol(df_imp), "\n")
-cat("    • Recalculated derived:", length(imp_params$derived_variables_to_recalculate), "\n")
-cat("    • Outcome variable: 1\n")
-cat("    • Total variables:", ncol(all_imputed[[1]]), "\n")
-cat("    • Observations:", nrow(all_imputed[[1]]), "\n\n")
-
 cat("NEXT STEPS:\n")
-cat("  1. Review convergence_trace_plots.png (check for mixing)\n")
-cat("  2. Review imputation_density_plots.png (check distributions)\n")
-cat("  3. Review imputation_quality_assessment.csv (check means/SDs)\n")
-cat("  4. If convergence good → Proceed to analysis (Chunk 9)\n")
-cat("  5. If convergence poor → Increase maxit and re-run\n\n")
+cat("  1. Review convergence_trace_plots_final.pdf  — chains should intermingle\n")
+cat("  2. Review imputation_density_plots.pdf        — obs/imp distributions\n")
+cat("  3. Check imputation_quality_assessment.csv    — flag any |SMD| > 0.5\n")
+cat("  4. Check imputation_scale_correlation_check.csv — verify latent structure\n")
+cat("  5. If all checks pass → Proceed to analysis (Chunk 9)\n\n")
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("✓ MULTIPLE IMPUTATION COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
-```
-## Post Hoc Linear Reg
-```{r}
-# Linear regression: ciss11 ~ phq2_score (complete cases)
-complete_data <- SIMOA_analysis[complete.cases(SIMOA_analysis[, c("ciss11", "phq2_score")]), ]
 
-model <- lm(ciss11 ~ phq2_score, data = complete_data)
-summary(model)
 ```
+
 
 
 
@@ -4505,716 +5315,577 @@ summary(model)
 #==============================================================================
 # CHUNK 9: POST-IMPUTATION PROCESSING
 #==============================================================================
-# Purpose: 
-#   1. Recalculate n_health_conditions for all imputed datasets
-#   2. Create validated personality subscales using already-reversed items
-#   3. Calculate reliability metrics
-# All operations performed on EACH imputed dataset separately
+# Purpose:
+#   1. Create validated personality subscales using already-reversed items
+#   2. Calculate reliability metrics
+#   All operations performed on EACH imputed dataset separately
+#
+# NOTE ON DATA SOURCE:
+#   Loads imputed_datasets_final.rds (list of 25 complete data frames).
+#   n_health_conditions and scrn_stopped_bzra were already added in Chunk 8
+#   — no re-derivation needed here.
+#
+# NOTE ON REVERSED ITEMS:
+#   All reversals were performed in Chunk 6 and are present in the imputed
+#   data under their _r names:
+#     BFI:   reserved_r, lazy_r, relaxed_r, few_interests_r, find_fault_r
+#     SURPS: surps1_r, surps4_r, surps7_r, surps13_r, surps20_r, surps23_r
+#   Subscale definitions below use these _r names directly.
+#
+# NOTE ON DBAS NAMING:
+#   First item has no underscore: dbas1
+#   Remaining items use underscore: dbas_2 through dbas_16
 #==============================================================================
+
+library(dplyr)
+library(psych)
 
 cat("\n")
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("POST-IMPUTATION PROCESSING\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Load imputed datasets
-if(!file.exists("mice_imputation_object.rds") || !file.exists("SIMOA_analysis.rds")) {
-  stop("ERROR: Required files not found. Please run Chunk 8 first.")
+# Load imputed datasets (list of 25 complete data frames from Chunk 8)
+if(!file.exists("imputed_datasets_final.rds")) {
+  stop("ERROR: imputed_datasets_final.rds not found. Please run Chunk 8 first.")
 }
 
-imp_final <- readRDS("mice_imputation_object.rds")
-SIMOA_original <- readRDS("SIMOA_analysis.rds")
-imp_params <- readRDS("imputation_parameters_optimized.rds")
+all_imputed <- readRDS("imputed_datasets_final.rds")
+m           <- length(all_imputed)
 
-cat("✓ Loaded MICE object with", imp_final$m, "imputations\n")
-cat("  Variables:", ncol(imp_final$data), "\n")
-cat("  Observations:", nrow(imp_final$data), "\n\n")
+cat("✓ Loaded imputed_datasets_final.rds\n")
+cat("  Imputations:", m, "\n")
+cat("  Variables per dataset:", ncol(all_imputed[[1]]), "\n")
+cat("  Observations:", nrow(all_imputed[[1]]), "\n\n")
 
-outcome_var <- "scrn_stopped_bzra"
-
-cat("REVERSE CODING STATUS (from Chunk 6):\n")
+# Verify expected variables are present
+cat("VERIFICATION: Checking reversed items from Chunk 6\n")
 cat("─────────────────────────────────────────────────────────────\n")
-cat("  BFI (5 items reversed):\n")
-cat("    • reserved (Extraversion, reversed)\n")
-cat("    • lazy (Conscientiousness, reversed)\n")
-cat("    • relaxed (Neuroticism, reversed)\n")
-cat("    • few_interests (Openness, reversed)\n")
-cat("    • find_fault (Agreeableness, reversed)\n")
-cat("  SURPS (6 items reversed):\n")
-cat("    • surps1, surps4, surps7, surps13, surps20, surps23 (Hopelessness, reversed)\n")
-cat("  DBAS: No reverse coding needed\n")
-cat("  CISS: No reverse coding needed\n\n")
 
-# -----------------------------------------------------------------------------
-# HELPER FUNCTION: SUBSCALE RELIABILITY ASSESSMENT
-# -----------------------------------------------------------------------------
+reversed_items_expected <- c(
+  "reserved_r", "lazy_r", "relaxed_r", "few_interests_r", "find_fault_r",
+  "surps1_r", "surps4_r", "surps7_r", "surps13_r", "surps20_r", "surps23_r"
+)
 
-assess_subscale_reliability <- function(data, items, name, scale_range = NULL) {
-  
-  # Check if all items exist
+present   <- reversed_items_expected[reversed_items_expected %in% names(all_imputed[[1]])]
+absent    <- reversed_items_expected[!reversed_items_expected %in% names(all_imputed[[1]])]
+
+cat(sprintf("  ✓ Reversed items present: %d / %d\n",
+            length(present), length(reversed_items_expected)))
+if(length(absent) > 0) {
+  cat("  ✗ MISSING reversed items:\n")
+  for(v in absent) cat("    •", v, "\n")
+  stop("Cannot proceed — reversed items missing from imputed data.")
+}
+cat("\n")
+
+# Also verify n_health_conditions and outcome are already present (Chunk 8)
+cat("VERIFICATION: Checking Chunk 8 post-processing variables\n")
+cat("─────────────────────────────────────────────────────────────\n")
+for(v in c("n_health_conditions", "scrn_stopped_bzra")) {
+  if(v %in% names(all_imputed[[1]])) {
+    cat(sprintf("  ✓ %s present (added in Chunk 8)\n", v))
+  } else {
+    cat(sprintf("  ⚠️  %s NOT present — check Chunk 8 output\n", v))
+  }
+}
+cat("\n")
+
+# =============================================================================
+# SUBSCALE DEFINITIONS
+# =============================================================================
+# Each entry: list(items = character vector, reversed_in_chunk6 = which _r names)
+# All items listed here are the FINAL variable names as they exist in df_imp.
+# =============================================================================
+
+subscale_defs <- list(
+
+  # ── BFI-10 ──────────────────────────────────────────────────────────────────
+  # 2 items per trait. Reversed items stored as _r (Chunk 6).
+  BFI_Extraversion      = list(items = c("reserved_r", "outgoing"),
+                                reversed = "reserved_r"),
+  BFI_Agreeableness     = list(items = c("find_fault_r", "trusting"),
+                                reversed = "find_fault_r"),
+  BFI_Conscientiousness = list(items = c("lazy_r", "thorough"),
+                                reversed = "lazy_r"),
+  BFI_Neuroticism       = list(items = c("relaxed_r", "nervous"),
+                                reversed = "relaxed_r"),
+  BFI_Openness          = list(items = c("few_interests_r", "imagination"),
+                                reversed = "few_interests_r"),
+
+  # ── SURPS ───────────────────────────────────────────────────────────────────
+  # Hopelessness items 1,4,7,13,20,23 were reversed in Chunk 6 → _r names.
+  # Item 17 was NOT reversed — kept as surps17.
+  SURPS_Hopelessness        = list(
+    items    = c("surps1_r", "surps4_r", "surps7_r", "surps13_r",
+                 "surps17", "surps20_r", "surps23_r"),
+    reversed = c("surps1_r", "surps4_r", "surps7_r", "surps13_r",
+                 "surps20_r", "surps23_r")),
+  SURPS_Impulsivity         = list(
+    items    = paste0("surps", c(2, 5, 11, 15, 22)),
+    reversed = character(0)),
+  SURPS_Sensation_Seeking   = list(
+    items    = paste0("surps", c(3, 6, 9, 12, 16, 19)),
+    reversed = character(0)),
+  SURPS_Anxiety_Sensitivity = list(
+    items    = paste0("surps", c(8, 10, 14, 18, 21)),
+    reversed = character(0)),
+
+  # ── DBAS-16 ─────────────────────────────────────────────────────────────────
+  # dbas1 has no underscore; dbas_2 through dbas_16 have underscore.
+  # No reverse coding for DBAS.
+  #
+  # Variable mapping derived from Morin et al. second-order CFA (DBAS-30 item
+  # numbers in parentheses):
+  #   Consequences (7):       dbas_3(5), dbas_4(8), dbas_5(10), dbas_7(12),
+  #                           dbas_9(18), dbas_12(21), dbas_16(30)
+  #   Worry/Helplessness (4): dbas_8(17), dbas_10(19), dbas_11(20), dbas_14(25)
+  #   Expectations (2):       dbas1(1), dbas_2(2)
+  #   Medication (3):         dbas_6(11), dbas_13(24), dbas_15(27)
+  DBAS_Consequences       = list(
+    items    = c("dbas_3", "dbas_4", "dbas_5", "dbas_7",
+                 "dbas_9", "dbas_12", "dbas_16"),
+    reversed = character(0)),
+  DBAS_Worry_Helplessness = list(
+    items    = c("dbas_8", "dbas_10", "dbas_11", "dbas_14"),
+    reversed = character(0)),
+  DBAS_Expectations       = list(
+    items    = c("dbas1", "dbas_2"),
+    reversed = character(0)),
+  DBAS_Medications        = list(
+    items    = c("dbas_6", "dbas_13", "dbas_15"),
+    reversed = character(0)),
+  DBAS_Total              = list(
+    items    = c("dbas1", paste0("dbas_", 2:16)),
+    reversed = character(0)),
+
+  # ── CISS ────────────────────────────────────────────────────────────────────
+  # No reverse coding for CISS.
+  CISS_Task      = list(items = paste0("ciss", c(2, 6, 8, 11, 13, 16, 19)),
+                         reversed = character(0)),
+  CISS_Emotion   = list(items = paste0("ciss", c(3, 5, 10, 12, 14, 17, 20)),
+                         reversed = character(0)),
+  CISS_Avoidance = list(items = paste0("ciss", c(1, 4, 7, 9, 15, 18, 21)),
+                         reversed = character(0))
+)
+
+# =============================================================================
+# HELPER: Reliability assessment
+# =============================================================================
+
+assess_reliability <- function(data, items, name) {
+
   missing_items <- items[!items %in% names(data)]
-  if(length(missing_items) > 0) {
-    return(list(
-      name = name,
-      n_items = length(items),
-      alpha = NA,
-      alpha_ci_lower = NA,
-      alpha_ci_upper = NA,
-      mean_inter_item_r = NA,
-      mean = NA,
-      sd = NA,
-      min = NA,
-      max = NA,
-      status = "MISSING ITEMS"
-    ))
-  }
-  
-  # Extract item data
-  item_data <- data %>% 
-    select(all_of(items)) %>% 
-    na.omit()
-  
-  n_complete <- nrow(item_data)
-  
-  # Need at least 10 cases
-  if(n_complete < 10) {
-    return(list(
-      name = name,
-      n_items = length(items),
-      alpha = NA,
-      alpha_ci_lower = NA,
-      alpha_ci_upper = NA,
-      mean_inter_item_r = NA,
-      mean = NA,
-      sd = NA,
-      min = NA,
-      max = NA,
-      status = "INSUFFICIENT DATA"
-    ))
-  }
-  
-  # Convert to numeric
+  if(length(missing_items) > 0)
+    return(list(name = name, alpha = NA, alpha_ci_lower = NA,
+                alpha_ci_upper = NA, mean_r = NA,
+                mean = NA, sd = NA, status = "MISSING ITEMS",
+                missing = missing_items))
+
+  item_data <- data[, items, drop = FALSE]
+  item_data <- item_data[complete.cases(item_data), ]
+
+  if(nrow(item_data) < 10)
+    return(list(name = name, alpha = NA, alpha_ci_lower = NA,
+                alpha_ci_upper = NA, mean_r = NA,
+                mean = NA, sd = NA, status = "INSUFFICIENT DATA",
+                missing = character(0)))
+
   item_matrix <- as.data.frame(lapply(item_data, as.numeric))
-  
+
   # Check variance
-  item_sds <- sapply(item_matrix, sd, na.rm = TRUE)
-  if(any(item_sds == 0 | is.na(item_sds))) {
-    return(list(
-      name = name,
-      n_items = length(items),
-      alpha = NA,
-      alpha_ci_lower = NA,
-      alpha_ci_upper = NA,
-      mean_inter_item_r = NA,
-      mean = NA,
-      sd = NA,
-      min = NA,
-      max = NA,
-      status = "NO VARIANCE"
-    ))
-  }
-  
-  # Calculate Cronbach's alpha
-  alpha_result <- tryCatch({
-    psych::alpha(item_matrix, check.keys = FALSE)
-  }, error = function(e) NULL)
-  
-  if(is.null(alpha_result)) {
-    return(list(
-      name = name,
-      n_items = length(items),
-      alpha = NA,
-      alpha_ci_lower = NA,
-      alpha_ci_upper = NA,
-      mean_inter_item_r = NA,
-      mean = NA,
-      sd = NA,
-      min = NA,
-      max = NA,
-      status = "ALPHA FAILED"
-    ))
-  }
-  
-  # Extract metrics
-  alpha <- alpha_result$total$raw_alpha
-  alpha_ci_lower <- alpha_result$feldt$lower.ci
-  alpha_ci_upper <- alpha_result$feldt$upper.ci
-  
-  # Inter-item correlations
-  cor_matrix <- cor(item_matrix, use = "complete.obs")
-  cor_vector <- cor_matrix[lower.tri(cor_matrix)]
-  mean_inter_item_r <- mean(cor_vector, na.rm = TRUE)
-  
-  # Calculate subscale scores (MEAN)
-  subscale_scores <- rowMeans(item_matrix, na.rm = FALSE)
-  
-  # Descriptive statistics
-  mean_score <- mean(subscale_scores, na.rm = TRUE)
-  sd_score <- sd(subscale_scores, na.rm = TRUE)
-  min_score <- min(subscale_scores, na.rm = TRUE)
-  max_score <- max(subscale_scores, na.rm = TRUE)
-  
-  # Quality assessment
-  status <- if(alpha >= 0.70) "GOOD" else if(alpha >= 0.60) "ACCEPTABLE" else "POOR"
-  
-  return(list(
-    name = name,
-    n_items = length(items),
-    alpha = alpha,
-    alpha_ci_lower = alpha_ci_lower,
-    alpha_ci_upper = alpha_ci_upper,
-    mean_inter_item_r = mean_inter_item_r,
-    mean = mean_score,
-    sd = sd_score,
-    min = min_score,
-    max = max_score,
-    status = status
-  ))
+  if(any(sapply(item_matrix, sd, na.rm = TRUE) == 0))
+    return(list(name = name, alpha = NA, alpha_ci_lower = NA,
+                alpha_ci_upper = NA, mean_r = NA,
+                mean = NA, sd = NA, status = "ZERO VARIANCE",
+                missing = character(0)))
+
+  alpha_result <- tryCatch(
+    psych::alpha(item_matrix, check.keys = FALSE),
+    error = function(e) NULL)
+
+  if(is.null(alpha_result))
+    return(list(name = name, alpha = NA, alpha_ci_lower = NA,
+                alpha_ci_upper = NA, mean_r = NA,
+                mean = NA, sd = NA, status = "ALPHA FAILED",
+                missing = character(0)))
+
+  scores   <- rowMeans(item_matrix)
+  cor_mat  <- cor(item_matrix, use = "complete.obs")
+
+  list(
+    name           = name,
+    n_items        = length(items),
+    alpha          = alpha_result$total$raw_alpha,
+    alpha_ci_lower = alpha_result$feldt$lower.ci,
+    alpha_ci_upper = alpha_result$feldt$upper.ci,
+    mean_r         = mean(cor_mat[lower.tri(cor_mat)], na.rm = TRUE),
+    mean           = mean(scores, na.rm = TRUE),
+    sd             = sd(scores,   na.rm = TRUE),
+    status         = dplyr::case_when(
+      alpha_result$total$raw_alpha >= 0.70 ~ "GOOD",
+      alpha_result$total$raw_alpha >= 0.60 ~ "ACCEPTABLE",
+      TRUE                                 ~ "POOR"),
+    missing        = character(0)
+  )
 }
 
-# -----------------------------------------------------------------------------
-# PART A: RECALCULATE n_health_conditions
-# -----------------------------------------------------------------------------
+# =============================================================================
+# PART A: VALIDATE ITEM NAMES BEFORE CREATING SUBSCALES
+# =============================================================================
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART A: RECALCULATING n_health_conditions\n")
+cat("PART A: VALIDATING ITEM NAMES\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("Recalculating for all", imp_final$m, "imputations...\n")
+all_item_names <- unique(unlist(lapply(subscale_defs, `[[`, "items")))
+missing_items  <- all_item_names[!all_item_names %in% names(all_imputed[[1]])]
+present_items  <- all_item_names[ all_item_names %in% names(all_imputed[[1]])]
 
-# Convert to long format
-mids_long <- complete(imp_final, "long", include = TRUE)
+cat(sprintf("  Total unique items across all subscales: %d\n",
+            length(all_item_names)))
+cat(sprintf("  ✓ Present in data: %d\n", length(present_items)))
 
-# Recalculate n_health_conditions
-mids_long <- mids_long %>%
-  mutate(n_health_conditions = n_physical_conditions + 
-                                n_ment_conditions + 
-                                n_sleep_conditions)
-
-cat("✓ Recalculated n_health_conditions\n")
-
-# Verify calculation
-verification <- mids_long %>%
-  filter(.imp == 1) %>%
-  mutate(check = (n_health_conditions == (n_physical_conditions + 
-                                           n_ment_conditions + 
-                                           n_sleep_conditions))) %>%
-  summarise(all_correct = all(check, na.rm = TRUE))
-
-if(verification$all_correct) {
-  cat("✓ VERIFICATION PASSED: All calculations correct\n\n")
+if(length(missing_items) > 0) {
+  cat(sprintf("  ✗ MISSING from data: %d\n", length(missing_items)))
+  for(v in missing_items) cat("    •", v, "\n")
+  cat("\n  ⚠️  Missing items will cause those subscales to be skipped.\n\n")
 } else {
-  cat("⚠️  WARNING: Some calculations may be incorrect\n\n")
+  cat("  ✓ All items present — subscale creation can proceed\n\n")
 }
 
-# Show distribution
-cat("n_health_conditions distribution (first imputation):\n")
-imp1_check <- mids_long %>% filter(.imp == 1)
-summary_stats <- imp1_check %>%
-  summarise(
-    Mean = mean(n_health_conditions, na.rm = TRUE),
-    SD = sd(n_health_conditions, na.rm = TRUE),
-    Min = min(n_health_conditions, na.rm = TRUE),
-    Max = max(n_health_conditions, na.rm = TRUE)
-  )
-print(summary_stats)
-cat("\n")
-
-# -----------------------------------------------------------------------------
-# PART B: CREATE PERSONALITY SUBSCALES
-# -----------------------------------------------------------------------------
+# =============================================================================
+# PART B: CREATE SUBSCALES ACROSS ALL IMPUTED DATASETS
+# =============================================================================
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART B: CREATING PERSONALITY SUBSCALES\n")
+cat("PART B: CREATING SUBSCALES\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("Creating subscales using MEAN scores (interpretable on original scale)\n")
-cat("IMPORTANT: Using ALREADY-REVERSED items from Chunk 6\n\n")
+cat("Scoring method: MEAN of items (interpretable on original scale)\n")
+cat("Applied to all", m, "imputed datasets\n\n")
 
-# Track created subscales
-subscales_created <- list()
+# Apply subscale scoring to every dataset in the list
+subscales_created <- character(0)
+subscales_skipped <- character(0)
 
-# B.1. BFI-10: Big Five Personality
-cat("B.1. BFI-10 Subscales (using reversed items)\n")
-cat("─────────────────────────────────────────────────────────────\n")
-
-# BFI scoring with already-reversed items
-# Note: Items marked (R) were reversed in Chunk 6
-bfi_subscales <- list(
-  Extraversion = c("reserved", "outgoing"),          # reserved already reversed
-  Agreeableness = c("find_fault", "trusting"),       # find_fault already reversed
-  Conscientiousness = c("lazy", "thorough"),         # lazy already reversed
-  Neuroticism = c("relaxed", "nervous"),             # relaxed already reversed
-  Openness = c("few_interests", "imagination")       # few_interests already reversed
-)
-
-cat("  Subscale composition:\n")
-cat("    Extraversion: reserved(R), outgoing\n")
-cat("    Agreeableness: find_fault(R), trusting\n")
-cat("    Conscientiousness: lazy(R), thorough\n")
-cat("    Neuroticism: relaxed(R), nervous\n")
-cat("    Openness: few_interests(R), imagination\n")
-cat("    (R) = reversed in Chunk 6\n\n")
-
-for(trait in names(bfi_subscales)) {
-  items <- bfi_subscales[[trait]]
-  
-  if(all(items %in% names(mids_long))) {
-    var_name <- paste0("BFI_", trait)
-    
-    mids_long <- mids_long %>%
-      rowwise() %>%
-      mutate(!!var_name := mean(c(!!!syms(items)), na.rm = FALSE)) %>%
-      ungroup()
-    
-    subscales_created$BFI[[trait]] <- list(
-      variable = var_name,
-      items = items,
-      n_items = length(items),
-      reversed_items = intersect(items, c("reserved", "lazy", "relaxed", "few_interests", "find_fault"))
-    )
-    
-    cat("  ✓ Created:", var_name, "\n")
-  } else {
-    cat("  ✗ Skipped:", trait, "(missing items)\n")
+all_imputed <- lapply(all_imputed, function(d) {
+  for(scale_name in names(subscale_defs)) {
+    items <- subscale_defs[[scale_name]]$items
+    # Only score if ALL items present and numeric-coercible
+    if(all(items %in% names(d))) {
+      item_mat <- as.data.frame(lapply(d[, items, drop = FALSE], as.numeric))
+      d[[scale_name]] <- rowMeans(item_mat, na.rm = FALSE)
+    }
   }
-}
-cat("\n")
+  d
+})
 
-# B.2. SURPS: Substance Use Risk Profile
-cat("B.2. SURPS Subscales (using reversed items)\n")
-cat("─────────────────────────────────────────────────────────────\n")
-
-# SURPS with already-reversed items
-# Items 1, 4, 7, 13, 20, 23 (Hopelessness positively-worded) were reversed
-surps_subscales <- list(
-  Impulsivity = paste0("surps", c(2, 5, 11, 15, 22)),
-  Sensation_Seeking = paste0("surps", c(3, 6, 9, 12, 16, 19)),
-  Hopelessness = paste0("surps", c(1, 4, 7, 13, 17, 20, 23)),  # 1,4,7,13,20,23 already reversed
-  Anxiety_Sensitivity = paste0("surps", c(8, 10, 14, 18, 21))
-)
-
-cat("  Subscale composition:\n")
-cat("    Hopelessness: surps1(R), surps4(R), surps7(R), surps13(R), surps17, surps20(R), surps23(R)\n")
-cat("    (R) = reversed in Chunk 6\n\n")
-
-for(dimension in names(surps_subscales)) {
-  items <- surps_subscales[[dimension]]
-  
-  if(all(items %in% names(mids_long))) {
-    var_name <- paste0("SURPS_", dimension)
-    
-    mids_long <- mids_long %>%
-      rowwise() %>%
-      mutate(!!var_name := mean(c(!!!syms(items)), na.rm = FALSE)) %>%
-      ungroup()
-    
-    subscales_created$SURPS[[dimension]] <- list(
-      variable = var_name,
-      items = items,
-      n_items = length(items),
-      reversed_items = intersect(items, paste0("surps", c(1, 4, 7, 13, 20, 23)))
-    )
-    
-    cat("  ✓ Created:", var_name, "\n")
+# Determine which subscales were actually created
+for(scale_name in names(subscale_defs)) {
+  if(scale_name %in% names(all_imputed[[1]])) {
+    subscales_created <- c(subscales_created, scale_name)
   } else {
-    cat("  ✗ Skipped:", dimension, "(missing items)\n")
-  }
-}
-cat("\n")
-
-# B.3. DBAS-16: Dysfunctional Beliefs About Sleep
-cat("B.3. DBAS-16 Subscales (no reverse coding needed)\n")
-cat("─────────────────────────────────────────────────────────────\n")
-
-dbas_subscales <- list(
-  Consequences = paste0("dbas_", c(5, 7, 9, 12, 16)),
-  Worry_Helplessness = paste0("dbas_", c(3, 4, 8, 10, 11, 14)),
-  Expectations = c("dbas1", "dbas_2"),
-  Medications = paste0("dbas_", c(6, 13, 15))
-)
-
-for(dimension in names(dbas_subscales)) {
-  items <- dbas_subscales[[dimension]]
-  
-  if(all(items %in% names(mids_long))) {
-    var_name <- paste0("DBAS_", dimension)
-    
-    mids_long <- mids_long %>%
-      rowwise() %>%
-      mutate(!!var_name := mean(c(!!!syms(items)), na.rm = FALSE)) %>%
-      ungroup()
-    
-    subscales_created$DBAS[[dimension]] <- list(
-      variable = var_name,
-      items = items,
-      n_items = length(items),
-      reversed_items = character(0)
-    )
-    
-    cat("  ✓ Created:", var_name, "\n")
-  } else {
-    cat("  ✗ Skipped:", dimension, "(missing items)\n")
+    subscales_skipped <- c(subscales_skipped, scale_name)
   }
 }
 
-# DBAS Total
-all_dbas_items <- c("dbas1", paste0("dbas_", 2:16))
-if(all(all_dbas_items %in% names(mids_long))) {
-  mids_long <- mids_long %>%
-    rowwise() %>%
-    mutate(DBAS_Total = mean(c(!!!syms(all_dbas_items)), na.rm = FALSE)) %>%
-    ungroup()
-  
-  subscales_created$DBAS[["Total"]] <- list(
-    variable = "DBAS_Total",
-    items = all_dbas_items,
-    n_items = length(all_dbas_items),
-    reversed_items = character(0)
-  )
-  
-  cat("  ✓ Created: DBAS_Total\n")
-}
-cat("\n")
-
-# B.4. CISS: Coping Inventory for Stressful Situations
-cat("B.4. CISS Subscales (no reverse coding needed)\n")
-cat("─────────────────────────────────────────────────────────────\n")
-
-ciss_subscales <- list(
-  Task = paste0("ciss", c(2, 6, 8, 11, 13, 16, 19)),
-  Emotion = paste0("ciss", c(3, 5, 10, 12, 14, 17, 20)),
-  Avoidance = paste0("ciss", c(1, 4, 7, 9, 15, 18, 21))
+# Report by scale family
+families <- list(
+  "BFI-10"  = grep("^BFI_",  subscales_created, value = TRUE),
+  "SURPS"   = grep("^SURPS_", subscales_created, value = TRUE),
+  "DBAS-16" = grep("^DBAS_", subscales_created, value = TRUE),
+  "CISS"    = grep("^CISS_", subscales_created, value = TRUE)
 )
 
-for(dimension in names(ciss_subscales)) {
-  items <- ciss_subscales[[dimension]]
-  
-  if(all(items %in% names(mids_long))) {
-    var_name <- paste0("CISS_", dimension)
-    
-    mids_long <- mids_long %>%
-      rowwise() %>%
-      mutate(!!var_name := mean(c(!!!syms(items)), na.rm = FALSE)) %>%
-      ungroup()
-    
-    subscales_created$CISS[[dimension]] <- list(
-      variable = var_name,
-      items = items,
-      n_items = length(items),
-      reversed_items = character(0)
-    )
-    
-    cat("  ✓ Created:", var_name, "\n")
-  } else {
-    cat("  ✗ Skipped:", dimension, "(missing items)\n")
+for(fam in names(families)) {
+  cat(sprintf("%s (%d subscales):\n", fam, length(families[[fam]])))
+  for(s in families[[fam]]) {
+    n_rev <- length(subscale_defs[[s]]$reversed)
+    rev_note <- if(n_rev > 0)
+      sprintf(" [%d item(s) reversed in Chunk 6]", n_rev) else ""
+    cat(sprintf("  ✓ %-30s  items: %s%s\n",
+                s,
+                paste(subscale_defs[[s]]$items, collapse = ", "),
+                rev_note))
   }
+  cat("\n")
 }
-cat("\n")
 
-# Count subscales
-n_total_subscales <- sum(
-  length(subscales_created$BFI),
-  length(subscales_created$SURPS),
-  length(subscales_created$DBAS),
-  length(subscales_created$CISS)
-)
+if(length(subscales_skipped) > 0) {
+  cat(sprintf("⚠️  SKIPPED (%d) — missing items:\n", length(subscales_skipped)))
+  for(s in subscales_skipped) cat("  •", s, "\n")
+  cat("\n")
+}
 
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("SUBSCALE CREATION SUMMARY:\n")
-cat("  Total subscales created:", n_total_subscales, "\n")
-cat("  • BFI-10:", length(subscales_created$BFI), "(all using reversed items)\n")
-cat("  • SURPS:", length(subscales_created$SURPS), "(Hopelessness using reversed items)\n")
-cat("  • DBAS-16:", length(subscales_created$DBAS), "(no reversal needed)\n")
-cat("  • CISS:", length(subscales_created$CISS), "(no reversal needed)\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
+cat(sprintf("Total subscales created: %d\n\n", length(subscales_created)))
 
-# -----------------------------------------------------------------------------
-# PART C: RELIABILITY ASSESSMENT
-# -----------------------------------------------------------------------------
+# =============================================================================
+# PART C: RELIABILITY ASSESSMENT (IMPUTATION 1)
+# =============================================================================
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("PART C: RELIABILITY ASSESSMENT\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("Assessing reliability using first imputed dataset...\n\n")
+cat("Using first imputed dataset (reliability is stable across imputations\n")
+cat("given low FMI; van Buuren, 2018 §6.6).\n\n")
+cat("NOTE: BFI-10 subscales each have 2 items. psych::alpha() on 2-item\n")
+cat("  scales computes a Spearman-Brown coefficient, not true Cronbach's α.\n")
+cat("  Interpret BFI α values as corrected item-total correlations rather\n")
+cat("  than internal consistency estimates.\n\n")
 
-# Get first imputation
-data_imp1 <- mids_long %>% filter(.imp == 1) %>% select(-.imp, -.id)
+data_imp1        <- all_imputed[[1]]
+reliability_list <- list()
 
-# Assess all subscales
-reliability_results <- list()
+for(fam in names(families)) {
+  cat(sprintf("%s:\n", fam))
+  cat("─────────────────────────────────────────────────────────────\n")
 
-cat("BFI-10 SUBSCALES:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-for(trait in names(subscales_created$BFI)) {
-  subscale_info <- subscales_created$BFI[[trait]]
-  result <- assess_subscale_reliability(
-    data = data_imp1,
-    items = subscale_info$items,
-    name = paste0("BFI_", trait),
-    scale_range = c(1, 5)
-  )
-  reliability_results[[subscale_info$variable]] <- result
-  
-  cat(sprintf("  %s: α = %.3f [%.3f, %.3f], M = %.2f (SD = %.2f)\n",
-              trait, result$alpha, result$alpha_ci_lower, 
-              result$alpha_ci_upper, result$mean, result$sd))
-}
-cat("\n")
+  for(scale_name in families[[fam]]) {
+    items  <- subscale_defs[[scale_name]]$items
+    result <- assess_reliability(data_imp1, items, scale_name)
+    reliability_list[[scale_name]] <- result
 
-cat("SURPS SUBSCALES:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-for(dimension in names(subscales_created$SURPS)) {
-  subscale_info <- subscales_created$SURPS[[dimension]]
-  result <- assess_subscale_reliability(
-    data = data_imp1,
-    items = subscale_info$items,
-    name = paste0("SURPS_", dimension),
-    scale_range = c(1, 4)
-  )
-  reliability_results[[subscale_info$variable]] <- result
-  
-  cat(sprintf("  %s: α = %.3f [%.3f, %.3f], M = %.2f (SD = %.2f)\n",
-              dimension, result$alpha, result$alpha_ci_lower, 
-              result$alpha_ci_upper, result$mean, result$sd))
-}
-cat("\n")
-
-cat("DBAS-16 SUBSCALES:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-for(dimension in names(subscales_created$DBAS)) {
-  subscale_info <- subscales_created$DBAS[[dimension]]
-  result <- assess_subscale_reliability(
-    data = data_imp1,
-    items = subscale_info$items,
-    name = paste0("DBAS_", dimension),
-    scale_range = c(0, 10)
-  )
-  reliability_results[[subscale_info$variable]] <- result
-  
-  cat(sprintf("  %s: α = %.3f [%.3f, %.3f], M = %.2f (SD = %.2f)\n",
-              dimension, result$alpha, result$alpha_ci_lower, 
-              result$alpha_ci_upper, result$mean, result$sd))
-}
-cat("\n")
-
-cat("CISS SUBSCALES:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-for(dimension in names(subscales_created$CISS)) {
-  subscale_info <- subscales_created$CISS[[dimension]]
-  result <- assess_subscale_reliability(
-    data = data_imp1,
-    items = subscale_info$items,
-    name = paste0("CISS_", dimension),
-    scale_range = c(1, 5)
-  )
-  reliability_results[[subscale_info$variable]] <- result
-  
-  cat(sprintf("  %s: α = %.3f [%.3f, %.3f], M = %.2f (SD = %.2f)\n",
-              dimension, result$alpha, result$alpha_ci_lower, 
-              result$alpha_ci_upper, result$mean, result$sd))
-}
-cat("\n")
-
-# Create summary table
-summary_table <- data.frame()
-for(var_name in names(reliability_results)) {
-  result <- reliability_results[[var_name]]
-  
-  # Get reversed items info
-  reversed_count <- 0
-  for(measure in names(subscales_created)) {
-    for(subscale in names(subscales_created[[measure]])) {
-      if(subscales_created[[measure]][[subscale]]$variable == var_name) {
-        reversed_count <- length(subscales_created[[measure]][[subscale]]$reversed_items)
-        break
-      }
+    if(!is.na(result$alpha)) {
+      status_sym <- switch(result$status,
+                           "GOOD"       = "✓",
+                           "ACCEPTABLE" = "~",
+                           "POOR"       = "⚠️",
+                           "?")
+      cat(sprintf("  %s %-30s α = %.3f [%.3f, %.3f]  mean-r = %.3f  M = %.2f (SD = %.2f)  [%s]\n",
+                  status_sym, scale_name,
+                  result$alpha, result$alpha_ci_lower, result$alpha_ci_upper,
+                  result$mean_r, result$mean, result$sd, result$status))
+    } else {
+      cat(sprintf("  ✗ %-30s STATUS: %s\n", scale_name, result$status))
+      if(length(result$missing) > 0)
+        cat("    Missing:", paste(result$missing, collapse = ", "), "\n")
     }
   }
-  
-  summary_table <- rbind(summary_table, data.frame(
-    Subscale = result$name,
-    N_Items = result$n_items,
-    N_Reversed = reversed_count,
-    Alpha = result$alpha,
-    CI_Lower = result$alpha_ci_lower,
-    CI_Upper = result$alpha_ci_upper,
-    Mean = result$mean,
-    SD = result$sd,
-    Status = result$status,
-    stringsAsFactors = FALSE
-  ))
+  cat("\n")
 }
 
-write.csv(summary_table, "subscale_reliability_summary.csv", row.names = FALSE)
+# Reliability summary table
+rel_table <- do.call(rbind, lapply(names(reliability_list), function(s) {
+  r <- reliability_list[[s]]
+  data.frame(
+    subscale       = s,
+    n_items        = length(subscale_defs[[s]]$items),   # base R — no %||% needed
+    n_reversed     = length(subscale_defs[[s]]$reversed),
+    alpha          = round(r$alpha,          3),
+    alpha_ci_lower = round(r$alpha_ci_lower, 3),
+    alpha_ci_upper = round(r$alpha_ci_upper, 3),
+    mean_inter_r   = round(r$mean_r,         3),
+    mean           = round(r$mean,           2),
+    sd             = round(r$sd,             2),
+    status         = r$status,
+    stringsAsFactors = FALSE
+  )
+}))
+
+write.csv(rel_table, "subscale_reliability_summary.csv", row.names = FALSE)
 cat("✓ Saved: subscale_reliability_summary.csv\n\n")
 
-# -----------------------------------------------------------------------------
-# PART D: ADD OUTCOME VARIABLE
-# -----------------------------------------------------------------------------
+# =============================================================================
+# PART D: VALIDATION
+# =============================================================================
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART D: ADDING OUTCOME VARIABLE\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-if(outcome_var %in% names(SIMOA_original)) {
-  outcome_data <- SIMOA_original[[outcome_var]]
-  mids_long[[outcome_var]] <- rep(outcome_data, times = imp_final$m + 1)
-  
-  cat("✓ Added outcome variable:", outcome_var, "\n")
-  cat("  Distribution:\n")
-  print(table(outcome_data, useNA = "ifany"))
-  cat("\n")
-} else {
-  cat("⚠️  Outcome variable not found\n\n")
-}
-
-# -----------------------------------------------------------------------------
-# PART E: CONVERT BACK TO MIDS AND SAVE
-# -----------------------------------------------------------------------------
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART E: FINALIZING AND SAVING\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-# Convert back to mids
-imp_with_subscales <- as.mids(mids_long)
-
-cat("✓ Converted to mids object\n")
-cat("  Variables:", ncol(imp_with_subscales$data), "\n")
-cat("  Subscales added:", n_total_subscales, "\n")
-cat("  n_health_conditions: recalculated\n\n")
-
-# Save mids object
-saveRDS(imp_with_subscales, "imputed_data_with_subscales.rds")
-cat("✓ Saved: imputed_data_with_subscales.rds\n")
-
-# Save as list of complete datasets too
-all_imputed_complete <- list()
-for(i in 1:imp_with_subscales$m) {
-  all_imputed_complete[[i]] <- complete(imp_with_subscales, i)
-}
-saveRDS(all_imputed_complete, "imputed_datasets_complete_final.rds")
-cat("✓ Saved: imputed_datasets_complete_final.rds (list of", length(all_imputed_complete), "datasets)\n")
-
-# Save reliability and subscale info
-saveRDS(list(
-  subscales_created = subscales_created,
-  reliability_results = reliability_results,
-  summary_table = summary_table
-), "subscale_metadata.rds")
-cat("✓ Saved: subscale_metadata.rds\n")
-
-# Save example dataset
-example_data <- complete(imp_with_subscales, 1)
-write.csv(example_data, "imputed_example_with_subscales.csv", row.names = FALSE)
-cat("✓ Saved: imputed_example_with_subscales.csv\n\n")
-
-# -----------------------------------------------------------------------------
-# PART F: VALIDATION
-# -----------------------------------------------------------------------------
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART F: VALIDATION\n")
+cat("PART D: VALIDATION\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 validation_passed <- TRUE
 
-# Check 1: n_health_conditions
-cat("1. Validating n_health_conditions...\n")
-for(i in 1:imp_with_subscales$m) {
-  imp_data <- complete(imp_with_subscales, i)
-  check <- all(imp_data$n_health_conditions == 
-                (imp_data$n_physical_conditions + 
-                 imp_data$n_ment_conditions + 
-                 imp_data$n_sleep_conditions), na.rm = TRUE)
-  if(check) {
-    cat(sprintf("  ✓ Imputation %d: Correct\n", i))
-  } else {
-    cat(sprintf("  ✗ Imputation %d: INCORRECT\n", i))
-    validation_passed <- FALSE
+# ── D1. All subscale variables present in every imputed dataset ───────────────
+cat("D1. Subscale presence across all imputations\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+subscale_presence_fails <- 0L
+for(i in seq_along(all_imputed)) {
+  for(s in subscales_created) {
+    if(!s %in% names(all_imputed[[i]])) {
+      cat(sprintf("  ✗ %s missing from imputation %d\n", s, i))
+      subscale_presence_fails <- subscale_presence_fails + 1L
+      validation_passed <- FALSE
+    }
   }
 }
-cat("\n")
+if(subscale_presence_fails == 0L)
+  cat(sprintf("  ✓ All %d subscales present in all %d imputations\n\n",
+              length(subscales_created), m))
 
-# Check 2: Subscales exist
-cat("2. Validating subscale creation...\n")
-all_subscale_vars <- c()
-for(measure in names(subscales_created)) {
-  for(subscale in names(subscales_created[[measure]])) {
-    var_name <- subscales_created[[measure]][[subscale]]$variable
-    all_subscale_vars <- c(all_subscale_vars, var_name)
+# ── D2. Subscale scores complete (no NAs) ─────────────────────────────────────
+cat("D2. Subscale completeness (no missing scores)\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+completeness_fails <- 0L
+for(s in subscales_created) {
+  for(i in seq_along(all_imputed)) {
+    n_na <- sum(is.na(all_imputed[[i]][[s]]))
+    if(n_na > 0) {
+      cat(sprintf("  ✗ %s: %d NAs in imputation %d\n", s, n_na, i))
+      completeness_fails <- completeness_fails + 1L
+      validation_passed  <- FALSE
+    }
   }
 }
+if(completeness_fails == 0L)
+  cat(sprintf("  ✓ All subscale scores complete (no NAs) across all imputations\n\n"))
 
-imp1_data <- complete(imp_with_subscales, 1)
-for(var in all_subscale_vars) {
-  if(var %in% names(imp1_data)) {
-    n_complete <- sum(!is.na(imp1_data[[var]]))
-    cat(sprintf("  ✓ %-30s: %d/%d complete\n", var, n_complete, nrow(imp1_data)))
-  } else {
-    cat(sprintf("  ✗ %-30s: MISSING\n", var))
-    validation_passed <- FALSE
-  }
-}
-cat("\n")
+# ── D3. Reversed items used, not originals ────────────────────────────────────
+cat("D3. Reversed item name check\n")
+cat("─────────────────────────────────────────────────────────────\n")
+cat("  Confirming subscales use _r names (not unreversed originals)\n\n")
 
-# Check 3: Reversed items verification
-cat("3. Verifying reversed items are included...\n")
-all_reversed_items <- c(
-  "reserved", "lazy", "relaxed", "few_interests", "find_fault",
-  paste0("surps", c(1, 4, 7, 13, 20, 23))
+original_names_that_should_be_reversed <- list(
+  BFI_Extraversion      = "reserved",
+  BFI_Agreeableness     = "find_fault",
+  BFI_Conscientiousness = "lazy",
+  BFI_Neuroticism       = "relaxed",
+  BFI_Openness          = "few_interests",
+  SURPS_Hopelessness    = c("surps1", "surps4", "surps7",
+                            "surps13", "surps20", "surps23")
 )
-for(item in all_reversed_items) {
-  if(item %in% names(imp1_data)) {
-    cat(sprintf("  ✓ %s present\n", item))
+
+for(scale_name in names(original_names_that_should_be_reversed)) {
+  bad_items <- intersect(
+    original_names_that_should_be_reversed[[scale_name]],
+    subscale_defs[[scale_name]]$items
+  )
+  if(length(bad_items) > 0) {
+    cat(sprintf("  ✗ %s uses un-reversed name(s): %s\n",
+                scale_name, paste(bad_items, collapse = ", ")))
+    validation_passed <- FALSE
   } else {
-    cat(sprintf("  ✗ %s MISSING\n", item))
+    cat(sprintf("  ✓ %s uses correctly reversed items\n", scale_name))
+  }
+}
+cat("\n")
+
+# ── D4. Subscale range plausibility ───────────────────────────────────────────
+cat("D4. Subscale range plausibility (imputation 1)\n")
+cat("─────────────────────────────────────────────────────────────\n")
+
+expected_ranges <- list(
+  BFI_Extraversion      = c(1, 5), BFI_Agreeableness = c(1, 5),
+  BFI_Conscientiousness = c(1, 5), BFI_Neuroticism   = c(1, 5),
+  BFI_Openness          = c(1, 5),
+  SURPS_Hopelessness    = c(1, 4), SURPS_Impulsivity         = c(1, 4),
+  SURPS_Sensation_Seeking = c(1, 4), SURPS_Anxiety_Sensitivity = c(1, 4),
+  DBAS_Consequences     = c(0, 10), DBAS_Worry_Helplessness   = c(0, 10),
+  DBAS_Expectations     = c(0, 10), DBAS_Medications          = c(0, 10),
+  DBAS_Total            = c(0, 10),
+  CISS_Task             = c(1, 5), CISS_Emotion  = c(1, 5),
+  CISS_Avoidance        = c(1, 5)
+)
+
+range_fails <- 0L
+for(s in names(expected_ranges)) {
+  if(!s %in% names(data_imp1)) next
+  exp_min <- expected_ranges[[s]][1]
+  exp_max <- expected_ranges[[s]][2]
+  obs_min <- min(data_imp1[[s]], na.rm = TRUE)
+  obs_max <- max(data_imp1[[s]], na.rm = TRUE)
+
+  if(obs_min < exp_min | obs_max > exp_max) {
+    cat(sprintf("  ⚠️  %-30s observed [%.2f, %.2f] outside expected [%g, %g]\n",
+                s, obs_min, obs_max, exp_min, exp_max))
+    range_fails <- range_fails + 1L
+  } else {
+    cat(sprintf("  ✓ %-30s range [%.2f, %.2f]  (expected [%g, %g])\n",
+                s, obs_min, obs_max, exp_min, exp_max))
+  }
+}
+if(range_fails == 0L) cat("\n  ✓ All subscale scores within expected ranges\n")
+cat("\n")
+
+# ── D5. n_health_conditions and outcome present (Chunk 8 carry-through) ───────
+cat("D5. Chunk 8 carry-through variables\n")
+cat("─────────────────────────────────────────────────────────────\n")
+for(v in c("n_health_conditions", "scrn_stopped_bzra")) {
+  if(v %in% names(all_imputed[[1]])) {
+    cat(sprintf("  ✓ %s present\n", v))
+  } else {
+    cat(sprintf("  ✗ %s MISSING\n", v))
     validation_passed <- FALSE
   }
 }
 cat("\n")
 
-# Check 4: Outcome variable
-cat("4. Validating outcome variable...\n")
-if(outcome_var %in% names(imp1_data)) {
-  cat(sprintf("  ✓ %s present\n", outcome_var))
-} else {
-  cat(sprintf("  ✗ %s MISSING\n", outcome_var))
-  validation_passed <- FALSE
-}
-cat("\n")
+# =============================================================================
+# PART E: SAVE OUTPUTS
+# =============================================================================
 
-# Final summary
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PART E: SAVING OUTPUTS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+saveRDS(all_imputed, "imputed_datasets_complete_final.rds")
+cat("✓ Saved: imputed_datasets_complete_final.rds\n")
+cat("  (List of", m, "complete datasets with subscales)\n\n")
+
+saveRDS(list(
+  subscale_defs      = subscale_defs,
+  subscales_created  = subscales_created,
+  subscales_skipped  = subscales_skipped,
+  reliability_list   = reliability_list,
+  reliability_table  = rel_table
+), "subscale_metadata.rds")
+cat("✓ Saved: subscale_metadata.rds\n\n")
+
+# Example dataset for inspection
+write.csv(all_imputed[[1]], "imputed_example_with_subscales.csv", row.names = FALSE)
+cat("✓ Saved: imputed_example_with_subscales.csv (imputation 1)\n\n")
+
+# =============================================================================
+# FINAL SUMMARY
+# =============================================================================
+
 cat("═══════════════════════════════════════════════════════════════\n")
 if(validation_passed) {
   cat("✅ ALL VALIDATION CHECKS PASSED\n")
-  cat("═══════════════════════════════════════════════════════════════\n\n")
-  
-  cat("PROCESSING COMPLETE:\n")
-  cat("  ✓ n_health_conditions recalculated for all", imp_with_subscales$m, "imputations\n")
-  cat("  ✓", n_total_subscales, "personality subscales created\n")
-  cat("  ✓ All subscales use ALREADY-REVERSED items from Chunk 6\n")
-  cat("  ✓ Reliability assessed (see summary table)\n")
-  cat("  ✓ Outcome variable added\n")
-  cat("  ✓ All datasets validated\n\n")
-  
-  cat("READY FOR ANALYSIS:\n")
-  cat("  → Load 'imputed_data_with_subscales.rds' for mice pooling\n")
-  cat("  → Or load 'imputed_datasets_complete_final.rds' for manual pooling\n")
-  cat("  → Review 'subscale_reliability_summary.csv' for reliability\n\n")
-  
 } else {
-  cat("⚠️  VALIDATION FAILED\n")
-  cat("═══════════════════════════════════════════════════════════════\n\n")
-  cat("Review errors above before proceeding\n\n")
+  cat("⚠️  ONE OR MORE VALIDATION CHECKS FAILED — review above\n")
 }
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+cat("PROCESSING COMPLETE:\n")
+cat(sprintf("  ✓ %d subscales created across all %d imputations\n",
+            length(subscales_created), m))
+cat("  ✓ All subscales use reversed items (_r) from Chunk 6\n")
+cat("  ✓ Reliability assessed on imputation 1\n")
+cat("  ✓ n_health_conditions and scrn_stopped_bzra present (from Chunk 8)\n\n")
+
+cat("RELIABILITY OVERVIEW:\n")
+cat("─────────────────────────────────────────────────────────────\n")
+n_good <- sum(rel_table$status == "GOOD",       na.rm = TRUE)
+n_acc  <- sum(rel_table$status == "ACCEPTABLE", na.rm = TRUE)
+n_poor <- sum(rel_table$status == "POOR",       na.rm = TRUE)
+n_fail <- sum(is.na(rel_table$status))
+cat(sprintf("  ✓ Good (α ≥ 0.70):       %d subscales\n", n_good))
+cat(sprintf("  ~ Acceptable (α 0.60-0.69): %d subscales\n", n_acc))
+cat(sprintf("  ⚠️  Poor (α < 0.60):        %d subscales\n", n_poor))
+if(n_fail > 0)
+  cat(sprintf("  ✗ Failed to compute:     %d subscales\n", n_fail))
+cat("\n")
+
+cat("FILES CREATED:\n")
+cat("  1. imputed_datasets_complete_final.rds  - List of", m, "complete datasets\n")
+cat("  2. subscale_reliability_summary.csv     - Alpha, CI, mean-r per subscale\n")
+cat("  3. subscale_metadata.rds                - Subscale definitions + reliability\n")
+cat("  4. imputed_example_with_subscales.csv   - Imputation 1 for inspection\n\n")
+
+cat("NEXT STEPS:\n")
+cat("  1. Review subscale_reliability_summary.csv\n")
+cat("  2. Load imputed_datasets_complete_final.rds for Chunk 10 analysis\n\n")
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("✓ POST-IMPUTATION PROCESSING COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 ```
+
+
 
 
 
@@ -5224,6 +5895,10 @@ cat("═════════════════════════
 # CHUNK 10: DESCRIPTIVE STATISTICS & GROUP COMPARISONS
 # Pooled across all m imputations using Rubin's Rules
 #==============================================================================
+#
+# DATA SOURCE:
+#   Loads imputed_datasets_complete_final.rds — a plain list of m complete
+#   data frames produced by Chunk 9. No mids object needed here.
 #
 # POOLING METHODS:
 #
@@ -5257,7 +5932,6 @@ cat("═════════════════════════
 #   Benjamini, Y., & Hochberg, Y. (1995). JRSS-B, 57(1), 289-300.
 #==============================================================================
 
-library(mice)
 library(dplyr)
 library(tidyr)
 library(purrr)
@@ -5270,16 +5944,20 @@ cat("===============================================================\n\n")
 
 #------------------------------------------------------------------------------
 # LOAD DATA
+# Chunk 9 output: plain list of m complete data frames
 #------------------------------------------------------------------------------
 
-if(!file.exists("imputed_data_with_subscales.rds"))
-  stop("ERROR: imputed_data_with_subscales.rds not found. Run Chunk 9 first.")
+if(!file.exists("imputed_datasets_complete_final.rds"))
+  stop("ERROR: imputed_datasets_complete_final.rds not found. Run Chunk 9 first.")
 
-imp_data <- readRDS("imputed_data_with_subscales.rds")
-m        <- imp_data$m
-N        <- nrow(mice::complete(imp_data, 1))
+all_imputed <- readRDS("imputed_datasets_complete_final.rds")
+m           <- length(all_imputed)
+N           <- nrow(all_imputed[[1]])
 
-cat(sprintf("Loaded imputed data: m = %d imputations, N = %d\n\n", m, N))
+cat(sprintf("Loaded imputed_datasets_complete_final.rds\n"))
+cat(sprintf("  Imputations (m): %d\n", m))
+cat(sprintf("  Observations (N): %d\n", N))
+cat(sprintf("  Variables per dataset: %d\n\n", ncol(all_imputed[[1]])))
 
 #------------------------------------------------------------------------------
 # RECODE FUNCTION — applied to each imputed dataset
@@ -5354,17 +6032,34 @@ recode_dataset <- function(df) {
       labels = c("No withdrawal","Insomnia only","Anxiety only",
                  "Other MH symptoms only","Physical symptoms only","Multiple symptoms"))
 
-  # Likert scales to numeric
-  for(var in c(paste0("side_effects_",1:4), paste0("safety_",1:4),
-               paste0("adls_",1:2), paste0("dependence_",1:3)))
+  # Stop rate (ordered: 0=abruptly, 1=slowly 1-4wk, 2=very slowly >4wk)
+  if("stop_rate_dc" %in% names(df))
+    df$stop_rate_dc <- factor(df$stop_rate_dc, levels = 0:2,
+      labels = c("Abruptly (cold turkey)",
+                 "Slowly (1-4 weeks)",
+                 "Very slowly (>4 weeks)"),
+      ordered = TRUE)
+
+  # Likert scales to numeric (Fix B polr→PMM vars may still be stored as factors)
+  likert_vars <- c(
+    paste0("side_effects_", 1:4), paste0("safety_", 1:4),
+    paste0("adls_", 1:2), paste0("dependence_", 1:3),
+    "med_burden_1", "med_burden2", "medburden_3", "med_burden_4",
+    "benefit_1", "benefit_4", "benefit_5", "benefit_6", "benefit_dep",
+    "memory","thinking","activities","socialize","driving",
+    "balance","falls","indication","efficacy","alternative",
+    "inf_soc","inf_pres","inf_rphc","interactions",
+    "dependence","reduc","cost"
+  )
+  for(var in likert_vars)
     if(var %in% names(df) && !is.numeric(df[[var]]))
       df[[var]] <- as.numeric(as.character(df[[var]]))
 
   df
 }
 
-# Build list of all m recoded datasets
-all_datasets <- lapply(1:m, function(i) recode_dataset(mice::complete(imp_data, i)))
+# Apply recoding to every imputed dataset
+all_datasets <- lapply(all_imputed, recode_dataset)
 cat(sprintf("Recoded all %d imputed datasets\n\n", m))
 
 # Use dataset 1 for structural info (variable names, factor levels)
@@ -5377,9 +6072,27 @@ d1 <- all_datasets[[1]]
 demographics <- c("age","sex","education","income","employment",
                   "driving_freq","prov_terr")
 
-clinical <- c("phq2_score","osss_3_score","gen_health","med_quant",
-              "n_physical_conditions","n_ment_conditions","n_sleep_conditions",
-              "n_health_conditions")
+clinical <- c(
+  # Core health
+  "phq2_score","osss_3_score","gen_health","med_quant",
+  "n_physical_conditions","n_ment_conditions","n_sleep_conditions",
+  "n_health_conditions",
+  # BZRA dose (weekly excluded — collinear with daily; see Chunk 7)
+  "bzra_daily_diazepam_eq",
+  # Length of BZRA use
+  "c_lengthofuse",
+  # Medication burden (4 separate items)
+  "med_burden_1","med_burden2","medburden_3","med_burden_4",
+  # BMQ Necessity raw items (composite deferred post-imputation)
+  "benefit_1","benefit_4","benefit_5","benefit_6","benefit_dep",
+  # Stop rate
+  "stop_rate_dc", 
+  # Reasons for stopping / would stop (17 items)
+  "memory","thinking","activities","socialize","driving",
+  "balance","falls","indication","efficacy","alternative",
+  "inf_soc","inf_pres","inf_rphc","interactions",
+  "dependence","reduc","cost"
+)
 
 sleep_adverse <- c(
   "alc_sleep","can_sleep","melatonin_use","op_sleep",
@@ -5388,16 +6101,23 @@ sleep_adverse <- c(
   "stop_wdl_exp_combined","wdl_symptom_count"
 )
 
-behavioural <- c(paste0("motivation_",1:3), paste0("desires_",1:3),
-                 "capability_1","capability")
+behavioural <- c(
+  # COM-B
+  paste0("motivation_",1:3), paste0("desires_",1:3),
+  "capability_1","capability"
+)
 
 personality <- c(
+  # BFI-10 (5 subscales — all 2-item; see note on Spearman-Brown reliability)
   "BFI_Extraversion","BFI_Agreeableness","BFI_Conscientiousness",
   "BFI_Neuroticism","BFI_Openness",
+  # SURPS (4 subscales)
   "SURPS_Impulsivity","SURPS_Sensation_Seeking",
   "SURPS_Hopelessness","SURPS_Anxiety_Sensitivity",
+  # DBAS-16 (4 subscales + Total)
   "DBAS_Consequences","DBAS_Worry_Helplessness",
-  "DBAS_Expectations","DBAS_Medications",
+  "DBAS_Expectations","DBAS_Medications","DBAS_Total",
+  # CISS (3 subscales)
   "CISS_Task","CISS_Emotion","CISS_Avoidance"
 )
 
@@ -5406,7 +6126,7 @@ all_vars <- all_vars[all_vars %in% names(d1)]
 
 cat_vars <- c("sex","education","income","employment","driving_freq","prov_terr",
               "gen_health","alc_sleep","can_sleep","melatonin_use","op_sleep",
-              "stop_wdl_exp_combined")
+              "stop_wdl_exp_combined","stop_rate_dc")
 cat_vars <- cat_vars[cat_vars %in% names(d1)]
 cont_vars <- all_vars[!all_vars %in% cat_vars]
 
@@ -5424,6 +6144,26 @@ get_family <- function(var) {
 family_lookup <- data.frame(variable = all_vars, Family = get_family(all_vars),
                              stringsAsFactors = FALSE)
 
+# Report any expected variables not found
+expected_personality <- c(
+  "BFI_Extraversion","BFI_Agreeableness","BFI_Conscientiousness",
+  "BFI_Neuroticism","BFI_Openness",
+  "SURPS_Impulsivity","SURPS_Sensation_Seeking",
+  "SURPS_Hopelessness","SURPS_Anxiety_Sensitivity",
+  "DBAS_Consequences","DBAS_Worry_Helplessness",
+  "DBAS_Expectations","DBAS_Medications","DBAS_Total",
+  "CISS_Task","CISS_Emotion","CISS_Avoidance"
+)
+missing_subscales <- expected_personality[!expected_personality %in% names(d1)]
+if(length(missing_subscales) > 0) {
+  cat("⚠️  Subscales expected but not found (check Chunk 9 ran successfully):\n")
+  for(v in missing_subscales) cat("  •", v, "\n")
+  cat("\n")
+} else {
+  cat(sprintf("✓ All %d personality subscales present\n\n",
+              length(expected_personality)))
+}
+
 cat("Variable families:\n")
 cat(sprintf("  Demographics: %d  |  Clinical: %d  |  Sleep/Adverse: %d\n",
             sum(all_vars %in% demographics), sum(all_vars %in% clinical),
@@ -5437,7 +6177,13 @@ cat(sprintf("  Behavioural:  %d  |  Personality: %d  |  Total: %d\n\n",
 #------------------------------------------------------------------------------
 
 if(!"scrn_stopped_bzra" %in% names(d1))
-  stop("ERROR: 'scrn_stopped_bzra' not found")
+  stop("ERROR: 'scrn_stopped_bzra' not found — check Chunk 8/9 outputs")
+
+# Ensure outcome is numeric for comparisons (may be factor in some datasets)
+for(i in seq_along(all_datasets))
+  if(!is.numeric(all_datasets[[i]]$scrn_stopped_bzra))
+    all_datasets[[i]]$scrn_stopped_bzra <-
+      as.numeric(as.character(all_datasets[[i]]$scrn_stopped_bzra))
 
 n_total        <- N
 n_discontinued <- sum(d1$scrn_stopped_bzra == 1, na.rm = TRUE)
@@ -5459,7 +6205,6 @@ cat(sprintf("Outcome: N = %d  |  Continued: %d (%.1f%%)  |  Discontinued: %d (%.
 
 pool_continuous <- function(var, datasets, outcome = "scrn_stopped_bzra") {
 
-  # Per-imputation statistics
   imp_stats <- lapply(datasets, function(df) {
     x   <- as.numeric(df[[var]])
     grp <- df[[outcome]]
@@ -5475,7 +6220,7 @@ pool_continuous <- function(var, datasets, outcome = "scrn_stopped_bzra") {
     # Pooled within-group SD for Cohen's d
     sp  <- sqrt(((n0-1)*v0 + (n1-1)*v1) / (n0+n1-2))
 
-    # Standard error of mean difference (for Rubin's pooling)
+    # Standard error of mean difference
     se_diff <- sqrt(v0/n0 + v1/n1)
 
     list(m_all=m_all, v_all=v_all,
@@ -5490,16 +6235,16 @@ pool_continuous <- function(var, datasets, outcome = "scrn_stopped_bzra") {
 
   # Pool overall
   pool_m_all  <- mean(sapply(imp_stats, `[[`, "m_all"))
-  pool_v_all  <- mean(sapply(imp_stats, `[[`, "v_all"))   # pooled within-imputation variance
+  pool_v_all  <- mean(sapply(imp_stats, `[[`, "v_all"))
   pool_sd_all <- sqrt(pool_v_all)
 
-  # Pool group 0
+  # Pool group 0 (continued)
   pool_m0  <- mean(sapply(imp_stats, `[[`, "m0"))
   pool_v0  <- mean(sapply(imp_stats, `[[`, "v0"))
   pool_sd0 <- sqrt(pool_v0)
   n0       <- round(mean(sapply(imp_stats, `[[`, "n0")))
 
-  # Pool group 1
+  # Pool group 1 (discontinued)
   pool_m1  <- mean(sapply(imp_stats, `[[`, "m1"))
   pool_v1  <- mean(sapply(imp_stats, `[[`, "v1"))
   pool_sd1 <- sqrt(pool_v1)
@@ -5508,10 +6253,10 @@ pool_continuous <- function(var, datasets, outcome = "scrn_stopped_bzra") {
   # Rubin's Rules for mean difference
   diffs  <- sapply(imp_stats, `[[`, "diff")
   se2s   <- sapply(imp_stats, `[[`, "se_diff")^2
-  Q_bar  <- mean(diffs)                             # pooled estimate
-  W      <- mean(se2s)                              # within-imputation variance
-  B      <- var(diffs)                              # between-imputation variance
-  T_var  <- W + (1 + 1/mm) * B                     # total variance (Rubin 1987)
+  Q_bar  <- mean(diffs)
+  W      <- mean(se2s)
+  B      <- var(diffs)
+  T_var  <- W + (1 + 1/mm) * B
   t_stat <- Q_bar / sqrt(T_var)
 
   # Barnard-Rubin degrees of freedom
@@ -5522,7 +6267,7 @@ pool_continuous <- function(var, datasets, outcome = "scrn_stopped_bzra") {
   df     <- 1 / (1/df_m + 1/df_obs)
   p_val  <- 2 * pt(abs(t_stat), df = df, lower.tail = FALSE)
 
-  # Cohen's d from pooled means and pooled within-group SD
+  # Cohen's d
   pool_sp <- mean(sapply(imp_stats, `[[`, "sp"))
   d       <- if(pool_sp > 0) Q_bar / pool_sp else NA_real_
   se_d    <- sqrt((n0+n1)/(n0*n1) + d^2 / (2*(n0+n1-2)))
@@ -5551,10 +6296,13 @@ pool_categorical <- function(var, datasets, outcome = "scrn_stopped_bzra") {
   if(is.null(lvls)) return(NULL)
 
   imp_stats <- lapply(datasets, function(df) {
-    # Build a complete table with ALL levels present (even if count = 0)
-    # using factor() to enforce level structure before tabling
+
     fac_var <- factor(df[[var]], levels = lvls)
-    fac_out <- factor(df[[outcome]], levels = c("0","1"))
+
+    # Outcome may be numeric 0/1 — use numeric levels to avoid NAs
+    out_vals <- df[[outcome]]
+    fac_out  <- factor(out_vals, levels = c(0, 1))
+
     tab <- table(fac_var, fac_out)
     colnames(tab) <- c("0","1")
 
@@ -5565,22 +6313,19 @@ pool_categorical <- function(var, datasets, outcome = "scrn_stopped_bzra") {
     ntot <- n0 + n1
     if(n0 == 0 || n1 == 0) return(NULL)
 
-    p_all <- tab / ntot
+    p_all <- rowSums(tab) / ntot
     p0    <- tab[,"0"] / n0
     p1    <- tab[,"1"] / n1
 
-    # Chi-square: only run if all expected counts > 0 in a reduced table
-    # (drop levels with zero total count to avoid the error)
-    tab_nonzero <- tab[rowSums(tab) > 0, , drop = FALSE]
+    # Drop zero-total rows before chi-square (avoids chisq.test errors)
+    tab_nz <- tab[rowSums(tab) > 0, , drop = FALSE]
     chi2 <- tryCatch({
-      if(nrow(tab_nonzero) < 2) {
-        NA_real_
-      } else {
-        suppressWarnings(chisq.test(tab_nonzero, correct = FALSE)$statistic)
-      }
+      if(nrow(tab_nz) < 2) NA_real_
+      else suppressWarnings(chisq.test(tab_nz, correct = FALSE)$statistic)
     }, error = function(e) NA_real_)
 
-    list(p_all=p_all, p0=p0, p1=p1, n0=n0, n1=n1, ntot=ntot,
+    list(p_all=p_all, p0=p0, p1=p1,
+         n0=n0, n1=n1, ntot=ntot,
          chi2=chi2, k=length(lvls))
   })
   imp_stats <- Filter(Negate(is.null), imp_stats)
@@ -5590,31 +6335,23 @@ pool_categorical <- function(var, datasets, outcome = "scrn_stopped_bzra") {
   n1   <- round(mean(sapply(imp_stats, `[[`, "n1")))
   ntot <- n0 + n1
 
-  # Pool proportions across imputations — each is a named vector over lvls
-  # Use sapply to get a lvls x m matrix, then rowMeans
+  # Pool proportions — ensure all levels present in each named vector
   safe_pool <- function(field) {
     mat <- sapply(imp_stats, function(s) {
-      v <- s[[field]]
-      # Ensure all levels are present and in correct order
+      v   <- s[[field]]
       out <- setNames(rep(0, length(lvls)), lvls)
       out[names(v)] <- v
       out
     })
-    if(is.null(dim(mat))) mat <- matrix(mat, nrow=length(lvls))
+    if(is.null(dim(mat))) mat <- matrix(mat, nrow = length(lvls))
     rowMeans(mat)
   }
 
-  pool_p_all <- safe_pool("p_all") |> (\(x) { x[] })()
-  # p_all is a matrix per imputation; need rowSums first then pool
-  pool_p_all <- rowMeans(sapply(imp_stats, function(s) {
-    v <- rowSums(s$p_all)
-    out <- setNames(rep(0, length(lvls)), lvls)
-    out[names(v)] <- v; out
-  }))
-  pool_p0 <- safe_pool("p0")
-  pool_p1 <- safe_pool("p1")
+  pool_p_all <- safe_pool("p_all")
+  pool_p0    <- safe_pool("p0")
+  pool_p1    <- safe_pool("p1")
 
-  # Pool chi-square: mean of valid chi-square statistics across imputations
+  # Pool chi-square (mean of valid values across imputations)
   chi2_vals <- sapply(imp_stats, `[[`, "chi2")
   chi2_vals <- chi2_vals[!is.na(chi2_vals)]
   pool_chi2 <- if(length(chi2_vals) > 0) mean(chi2_vals) else NA_real_
@@ -5622,15 +6359,13 @@ pool_categorical <- function(var, datasets, outcome = "scrn_stopped_bzra") {
   df_chi    <- max(k - 1, 1)
   p_val     <- if(!is.na(pool_chi2)) pchisq(pool_chi2, df=df_chi, lower.tail=FALSE) else NA_real_
 
-  # Cramer's V from pooled chi-square
-  # k here is number of levels; min(k,2)-1 avoids dividing by 0 when k=1
+  # Cramer's V
   denom_k <- max(min(k, 2) - 1, 1)
-  v <- if(!is.na(pool_chi2) && ntot > 0) {
-    min(sqrt(pool_chi2 / (ntot * denom_k)), 1)
-  } else NA_real_
+  v <- if(!is.na(pool_chi2) && ntot > 0)
+    min(sqrt(pool_chi2 / (ntot * denom_k)), 1) else NA_real_
   se_v <- if(!is.na(v)) sqrt((1 - v^2)^2 / (ntot - 1)) else NA_real_
 
-  # Build per-level rows
+  # Build per-level display rows
   level_rows <- data.frame(
     level        = lvls,
     overall_n    = round(pool_p_all * ntot),
@@ -5704,29 +6439,26 @@ interpret_v <- function(v) {
 
 #==============================================================================
 # BUILD RESULTS DATA FRAME
-# One summary row per variable (for p-values, FDR, effect sizes)
-# Plus sub-rows for categorical levels
 #==============================================================================
 
 summary_rows <- map_df(all_vars, function(var) {
   res <- pooled_results[[var]]
   if(is.null(res)) return(NULL)
 
-  fam  <- get_family(var)
-  p    <- res$p_val
-  es   <- res$effect_size
+  fam   <- get_family(var)
+  p     <- res$p_val
+  es    <- res$effect_size
   etype <- res$effect_type
-
   interp <- if(etype == "Cohens_d") interpret_d(es) else interpret_v(es)
 
   data.frame(
-    variable     = var,
-    Family       = fam,
-    p_val        = p,
-    effect_type  = etype,
-    effect_size  = es,
-    ci_low       = res$ci_low,
-    ci_high      = res$ci_high,
+    variable       = var,
+    Family         = fam,
+    p_val          = p,
+    effect_type    = etype,
+    effect_size    = es,
+    ci_low         = res$ci_low,
+    ci_high        = res$ci_high,
     interpretation = interp,
     stringsAsFactors = FALSE
   )
@@ -5773,7 +6505,6 @@ for(var in all_vars) {
   fam <- srow$Family
 
   if(res$type == "continuous") {
-    # Single row for continuous variable
     table_rows[[length(table_rows)+1]] <- data.frame(
       Family       = fam,
       Variable     = var,
@@ -5788,9 +6519,8 @@ for(var in all_vars) {
       Interpretation = srow$interpretation,
       stringsAsFactors = FALSE
     )
-
   } else {
-    # Parent row (blank descriptives)
+    # Parent row (blank descriptives — stats at variable level)
     table_rows[[length(table_rows)+1]] <- data.frame(
       Family       = fam,
       Variable     = var,
@@ -5805,7 +6535,6 @@ for(var in all_vars) {
       Interpretation = srow$interpretation,
       stringsAsFactors = FALSE
     )
-
     # Sub-rows for each level
     for(j in seq_len(nrow(res$levels))) {
       lv <- res$levels[j, ]
@@ -5816,11 +6545,7 @@ for(var in all_vars) {
         Overall      = lv$overall_desc,
         Continued    = lv$cont_desc,
         Discontinued = lv$disc_desc,
-        p            = "",
-        p_FDR        = "",
-        Sig          = "",
-        ES           = "",
-        Interpretation = "",
+        p = "", p_FDR = "", Sig = "", ES = "", Interpretation = "",
         stringsAsFactors = FALSE
       )
     }
@@ -5842,7 +6567,6 @@ cat("===============================================================\n\n")
 print(display_table, row.names = FALSE, na.print = "")
 cat("\n")
 
-# Save with labelled columns
 out_table <- display_table
 names(out_table) <- c(
   "Family", "Variable",
@@ -5870,10 +6594,7 @@ for(var in all_vars) {
 
   if(res$type == "continuous") {
     table1_rows[[length(table1_rows)+1]] <- data.frame(
-      Variable = var,
-      Overall  = res$overall_desc,
-      stringsAsFactors = FALSE
-    )
+      Variable = var, Overall = res$overall_desc, stringsAsFactors = FALSE)
   } else {
     table1_rows[[length(table1_rows)+1]] <- data.frame(
       Variable = var, Overall = "", stringsAsFactors = FALSE)
@@ -5945,9 +6666,8 @@ notable <- summary_rows %>%
   arrange(desc(abs(effect_size)))
 
 if(nrow(notable) > 0) {
-  cat("NOTABLE EFFECT SIZES (medium or large):\n")
+  cat("NOTABLE EFFECT SIZES (medium or large, regardless of significance):\n")
   cat("-------------------------------------------------------------\n")
-  cat("Note: listed regardless of statistical significance\n\n")
   print(notable %>%
           select(Family, variable, effect_type, effect_size, ci_low, ci_high, interpretation),
         row.names = FALSE)
@@ -5965,10 +6685,9 @@ cat("===============================================================\n\n")
 age_res <- pooled_results[["age"]]
 cat("Sample Characteristics:\n")
 cat("-------------------------------------------------------------\n")
-if(!is.null(age_res)) {
-  cat(sprintf("The final sample comprised %d older adults (%s years).\n",
+if(!is.null(age_res))
+  cat(sprintf("The final sample comprised %d older adults (M age = %s years).\n",
               n_total, age_res$overall_desc))
-}
 
 sex_res <- pooled_results[["sex"]]
 if(!is.null(sex_res)) {
@@ -5986,8 +6705,8 @@ cat(sprintf("BZRA medication; %d (%.1f%%) continued use.\n\n",
 cat("Group Comparisons:\n")
 cat("-------------------------------------------------------------\n")
 if(nrow(sig_vars) > 0) {
-  cat(sprintf("After FDR correction within variable families (Benjamini & Hochberg, 1995),\n"))
-  cat(sprintf("those who discontinued differed significantly from those who continued\n"))
+  cat("After FDR correction within variable families (Benjamini & Hochberg, 1995),\n")
+  cat("those who discontinued differed significantly from those who continued\n")
   cat(sprintf("on %d variable(s):\n\n", nrow(sig_vars)))
   for(i in seq_len(min(5, nrow(sig_vars)))) {
     es_label <- ifelse(sig_vars$effect_type[i] == "Cohens_d", "d", "V")
@@ -6044,7 +6763,9 @@ cat("  - All estimates pooled across", m, "imputations (Rubin's Rules)\n")
 cat("  - Continuous: Mean (pooled within-imputation SD)\n")
 cat("  - Categorical: n (pooled %)\n")
 cat("  - Cohen's d: positive = higher in discontinued group\n")
-cat("  - Cramer's V: always positive\n\n")
+cat("  - Cramer's V: always positive\n")
+cat("  - BFI subscales: 2-item Spearman-Brown, not true Cronbach's alpha\n")
+cat("  - DBAS_Total included as overall dysfunctional beliefs summary\n\n")
 cat("REFERENCES:\n")
 cat("  Rubin, D.B. (1987). Multiple Imputation for Nonresponse in Surveys.\n")
 cat("  Li et al. (1991). Statistica Sinica, 1(1), 65-92.\n")
@@ -6057,390 +6778,507 @@ cat("  Cohen, J. (1988). Statistical Power Analysis (2nd ed.).\n\n")
 
 
 
+
 ## PERS VSURF
 ```{r}
 #==============================================================================
 # CHUNK 11A: VSURF VARIABLE SELECTION (PERSONALITY PREDICTORS)
 #==============================================================================
-# Purpose: Select important personality variables for BZRA discontinuation
-# Strategy: Apply VSURF to personality subscales (BFI, SURPS, DBAS, CISS)
-# Rationale: Reduce high-dimensional correlated personality block
-# Output: Reduced set of personality predictors for logistic regression
+# Purpose:
+#   Select important personality variables for BZRA discontinuation using
+#   VSURF applied separately to each of the 25 imputed datasets.
+#   Variables are retained by majority vote (selected in ≥ 13/25 runs).
+#
+# Strategy (Option 1 — MI-appropriate):
+#   Run VSURF independently on each imputed dataset.
+#   Majority-vote separately for threshold, interpretation, and prediction sets.
+#   Use the PREDICTION set for downstream logistic regression.
+#
+# Rationale for prediction set (not interpretation set):
+#   The interpretation set maximises explanatory coverage; the prediction set
+#   is the minimal subset that preserves predictive accuracy. With only 93
+#   events (~6-9 EPV ceiling), parsimony is required.
+#
+# References:
+#   Genuer R, Poggi J-M, Tuleau-Malot C (2015). VSURF: An R Package for
+#     Variable Selection Using Random Forests. R Journal, 7(2):19-33.
+#   Rubin, D.B. (1987). Multiple Imputation for Nonresponse in Surveys.
 #==============================================================================
 
 library(VSURF)
-library(tidyverse)
-library(mice)
-library(randomForest)
+library(dplyr)
 library(ggplot2)
 
 cat("\n")
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("CHUNK 11A: VSURF VARIABLE SELECTION (PERSONALITY)\n")
+cat("MI-appropriate: majority vote across all 25 imputations\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Load imputed data with subscales
-if(!file.exists("imputed_data_with_subscales.rds")) {
-  stop("ERROR: Run Chunk 9 first to create subscales")
-}
+#------------------------------------------------------------------------------
+# LOAD DATA
+#------------------------------------------------------------------------------
 
-mids_data <- readRDS("imputed_data_with_subscales.rds")
-cat("✓ Loaded imputed data with", mids_data$m, "imputations\n\n")
+if(!file.exists("imputed_datasets_complete_final.rds"))
+  stop("ERROR: imputed_datasets_complete_final.rds not found. Run Chunk 9 first.")
 
-# Get outcome variable
+all_imputed <- readRDS("imputed_datasets_complete_final.rds")
+m           <- length(all_imputed)
+N           <- nrow(all_imputed[[1]])
+
+cat(sprintf("✓ Loaded imputed_datasets_complete_final.rds\n"))
+cat(sprintf("  Imputations (m): %d\n", m))
+cat(sprintf("  Observations (N): %d\n\n", N))
+
 outcome_var <- "scrn_stopped_bzra"
 
-# ==============================================================================
-# DEFINE PERSONALITY VARIABLES
-# ==============================================================================
+#------------------------------------------------------------------------------
+# PERSONALITY VARIABLE SET
+#------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("DEFINING PERSONALITY VARIABLES\n")
+cat("PERSONALITY VARIABLE SET\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Personality subscales (created in Chunk 9)
 personality_vars <- c(
-  # BFI-10 (Big Five)
+  # BFI-10 (Big Five Inventory — 2 items per trait)
   "BFI_Extraversion", "BFI_Agreeableness", "BFI_Conscientiousness",
   "BFI_Neuroticism", "BFI_Openness",
-  
-  # SURPS (Substance Use Risk Profile)
+
+  # SURPS (Substance Use Risk Profile Scale)
   "SURPS_Impulsivity", "SURPS_Sensation_Seeking",
   "SURPS_Hopelessness", "SURPS_Anxiety_Sensitivity",
-  
-  # DBAS-16 (Dysfunctional Beliefs About Sleep) - subscales only
+
+  # DBAS-16 subscales (dysfunctional beliefs about sleep)
+  # DBAS_Total excluded: mean of all 16 items — collinear with subscales
   "DBAS_Consequences", "DBAS_Worry_Helplessness",
   "DBAS_Expectations", "DBAS_Medications",
-  
-  # CISS (Coping Inventory)
+
+  # CISS (Coping Inventory for Stressful Situations)
   "CISS_Task", "CISS_Emotion", "CISS_Avoidance"
 )
 
-cat("PERSONALITY VARIABLES (", length(personality_vars), "):\n\n", sep = "")
+cat(sprintf("Total personality variables: %d\n", length(personality_vars)))
 cat("  BFI-10 (5): Extraversion, Agreeableness, Conscientiousness, Neuroticism, Openness\n")
-cat("  SURPS (4): Impulsivity, Sensation_Seeking, Hopelessness, Anxiety_Sensitivity\n")
-cat("  DBAS-16 (4): Consequences, Worry_Helplessness, Expectations, Medications\n")
-cat("  CISS (3): Task, Emotion, Avoidance\n\n")
+cat("  SURPS  (4): Impulsivity, Sensation_Seeking, Hopelessness, Anxiety_Sensitivity\n")
+cat("  DBAS   (4): Consequences, Worry_Helplessness, Expectations, Medications\n")
+cat("  CISS   (3): Task, Emotion, Avoidance\n")
+cat("  DBAS_Total excluded (mean of all 16 items — collinear with subscales)\n\n")
 
-cat("EXCLUDED:\n")
-cat("  • DBAS_Total (sum of subscales - redundant)\n\n")
-
-# ==============================================================================
-# PREPARE DATA
-# ==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("PREPARING DATA\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-# Extract first imputation
-data_complete <- complete(mids_data, 1)
-
-# Check variable availability
-available_vars <- personality_vars[personality_vars %in% names(data_complete)]
-missing_vars <- personality_vars[!personality_vars %in% names(data_complete)]
-
+# Confirm all variables present in first dataset
+missing_vars <- personality_vars[!personality_vars %in% names(all_imputed[[1]])]
 if(length(missing_vars) > 0) {
-  cat("⚠️  WARNING: Missing variables:\n")
-  for(var in missing_vars) cat("    •", var, "\n")
-  cat("\n")
+  cat("✗ MISSING variables (check Chunk 9):\n")
+  for(v in missing_vars) cat("  •", v, "\n")
+  stop("Cannot proceed — personality subscales missing from imputed data.")
+} else {
+  cat(sprintf("✓ All %d personality variables confirmed in imputed data\n\n",
+              length(personality_vars)))
 }
 
-cat("Available personality variables:", length(available_vars), "of", length(personality_vars), "\n\n")
+#------------------------------------------------------------------------------
+# EVENTS-PER-VARIABLE CHECK
+#------------------------------------------------------------------------------
 
-# Prepare predictor matrix
-X <- data_complete %>%
-  select(all_of(available_vars)) %>%
-  select(where(~ !all(is.na(.))))
+n_events <- sum(all_imputed[[1]][[outcome_var]] == 1, na.rm = TRUE)
+epv      <- round(n_events / length(personality_vars), 1)
 
-# Prepare outcome
-if(!outcome_var %in% names(data_complete)) {
-  stop("ERROR: Outcome variable '", outcome_var, "' not found!")
-}
+cat("EPV CHECK:\n")
+cat(sprintf("  Events (discontinuers): %d\n", n_events))
+cat(sprintf("  Input variables: %d\n", length(personality_vars)))
+cat(sprintf("  Events-per-variable: %.1f\n", epv))
+if(epv < 5)
+  cat("  ⚠️  EPV < 5 — interpret VSURF results cautiously\n")
+cat("\n")
 
-y <- data_complete[[outcome_var]]
-
-# Remove missing outcomes
-complete_idx <- !is.na(y)
-X <- X[complete_idx, ]
-y <- y[complete_idx]
-y <- factor(y, levels = c(0, 1), labels = c("Continued", "Discontinued"))
-y <- droplevels(y)
-
-cat("Data for VSURF:\n")
-cat("  Observations:", nrow(X), "\n")
-cat("  Predictors:", ncol(X), "\n")
-cat("  Outcome:", outcome_var, "\n\n")
-
-cat("Outcome distribution:\n")
-outcome_table <- table(y)
-print(outcome_table)
-cat("\n  Discontinuation rate:", round(100 * outcome_table[2] / sum(outcome_table), 1), "%\n")
-cat("  Events per variable:", round(outcome_table[2] / ncol(X), 1), "\n\n")
-
-# ==============================================================================
-# RUN VSURF
-# ==============================================================================
+#------------------------------------------------------------------------------
+# MAJORITY-VOTE VSURF ACROSS ALL m IMPUTATIONS
+#------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("RUNNING VSURF\n")
+cat("RUNNING VSURF ON ALL 25 IMPUTATIONS\n")
+cat("(this will take several minutes)\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("VSURF Algorithm:\n")
-cat("  1. THRESHOLDING - Remove irrelevant variables\n")
-cat("  2. INTERPRETATION - Variables for explanatory models\n")
-cat("  3. PREDICTION - Minimal set for pure prediction\n\n")
+majority_threshold      <- ceiling(m / 2)   # ≥ 13 of 25 (threshold + interpretation sets)
+majority_threshold_pred <- 10L               # ≥ 10 of 25 (prediction set only)
+                                             # Rationale: VSURF prediction sets are
+                                             # intentionally sparse; ≥10/25 captures
+                                             # variables with consistent signal while
+                                             # preserving parsimony for EPV constraints.
+cat(sprintf("Majority-vote threshold (threshold/interp sets): ≥ %d / %d runs\n",
+            majority_threshold, m))
+cat(sprintf("Majority-vote threshold (prediction set):        ≥ %d / %d runs\n\n",
+            majority_threshold_pred, m))
 
-cat("Running VSURF (may take several minutes)...\n\n")
+# Storage
+thres_list  <- vector("list", m)   # threshold set per imputation
+interp_list <- vector("list", m)   # interpretation set per imputation
+pred_list   <- vector("list", m)   # prediction set per imputation
+imp_list    <- vector("list", m)   # importance values per imputation
+failed_runs <- integer(0)
 
-set.seed(12345)
 start_time <- Sys.time()
 
-vsurf_result <- tryCatch({
-  VSURF(
-    x = X,
-    y = y,
-    ntree = 2000,
-    mtry = max(floor(ncol(X)/3), 1),
-    parallel = FALSE,
-    verbose = TRUE
+for(i in seq_len(m)) {
+
+  cat(sprintf("  Imputation %2d / %d ... ", i, m))
+
+  df <- all_imputed[[i]]
+
+  # Predictor matrix — personality vars only
+  X <- as.data.frame(lapply(df[, personality_vars, drop = FALSE], as.numeric))
+
+  # Outcome — numeric 0/1 → factor
+  y <- factor(df[[outcome_var]], levels = c(0, 1),
+              labels = c("Continued", "Discontinued"))
+
+  # Drop any rows with NA outcome (should be none post-imputation)
+  ok <- !is.na(y)
+  X  <- X[ok, ]
+  y  <- droplevels(y[ok])
+
+  set.seed(12345 + i)   # reproducible but distinct per imputation
+
+  vsurf_i <- tryCatch(
+    VSURF(
+      x       = X,
+      y       = y,
+      ntree   = 2000,
+      mtry    = max(floor(ncol(X) / 3), 1),
+      parallel = FALSE,
+      verbose  = FALSE
+    ),
+    error = function(e) {
+      cat(sprintf("FAILED (%s)\n", e$message))
+      NULL
+    }
   )
-}, error = function(e) {
-  cat("\n✗ ERROR:", e$message, "\n")
-  return(NULL)
-})
 
-end_time <- Sys.time()
+  if(is.null(vsurf_i)) {
+    failed_runs <- c(failed_runs, i)
+    thres_list[[i]]  <- character(0)
+    interp_list[[i]] <- character(0)
+    pred_list[[i]]   <- character(0)
+    imp_list[[i]]    <- setNames(rep(NA_real_, length(personality_vars)),
+                                  personality_vars)
+    next
+  }
+
+  thres_list[[i]]  <- personality_vars[vsurf_i$varselect.thres]
+  interp_list[[i]] <- personality_vars[vsurf_i$varselect.interp]
+  pred_list[[i]]   <- personality_vars[vsurf_i$varselect.pred]
+
+  # Store mean importance across all variables (for later averaging)
+  imp_vec <- setNames(rep(NA_real_, length(personality_vars)), personality_vars)
+  imp_vec[personality_vars] <- vsurf_i$imp.mean.dec
+  imp_list[[i]] <- imp_vec
+
+  n_thres <- length(thres_list[[i]])
+  n_pred  <- length(pred_list[[i]])
+  cat(sprintf("thres=%d, pred=%d\n", n_thres, n_pred))
+}
+
+end_time   <- Sys.time()
 time_taken <- round(difftime(end_time, start_time, units = "mins"), 2)
+cat(sprintf("\n✓ VSURF completed in %.1f minutes\n", time_taken))
+if(length(failed_runs) > 0)
+  cat(sprintf("⚠️  Failed runs: %s\n", paste(failed_runs, collapse = ", ")))
+cat("\n")
 
-cat("\n✓ VSURF completed in", time_taken, "minutes\n\n")
-
-# ==============================================================================
-# EXTRACT RESULTS
-# ==============================================================================
+#------------------------------------------------------------------------------
+# MAJORITY VOTE
+#------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("VSURF RESULTS\n")
+cat("MAJORITY-VOTE RESULTS\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-if(is.null(vsurf_result)) {
-  # Fallback: Standard RF importance
-  cat("⚠️  VSURF failed - using fallback (RF importance)\n\n")
-  
-  set.seed(12345)
-  rf_model <- randomForest(x = X, y = y, importance = TRUE, ntree = 2000)
-  
-  importance_vals <- importance(rf_model)[, "MeanDecreaseGini"]
-  importance_df <- data.frame(
-    Variable = names(importance_vals),
-    Importance = importance_vals
-  ) %>% arrange(desc(Importance))
-  
-  # Select top 8
-  selected_vars <- importance_df$Variable[1:min(8, nrow(importance_df))]
-  
-  vsurf_threshold <- selected_vars
-  vsurf_interpretation <- selected_vars
-  vsurf_prediction <- selected_vars[1:min(5, length(selected_vars))]
-  
-} else {
-  # Extract VSURF results
-  vsurf_threshold <- names(X)[vsurf_result$varselect.thres]
-  vsurf_interpretation <- names(X)[vsurf_result$varselect.interp]
-  vsurf_prediction <- names(X)[vsurf_result$varselect.pred]
-  
-  # Get importance
-  if(length(vsurf_threshold) > 0) {
-    importance_df <- data.frame(
-      Variable = vsurf_threshold,
-      Importance = vsurf_result$imp.varselect.thres
-    ) %>% arrange(desc(Importance))
-  } else {
-    set.seed(12345)
-    rf_model <- randomForest(x = X, y = y, importance = TRUE, ntree = 2000)
-    importance_vals <- importance(rf_model)[, "MeanDecreaseGini"]
-    importance_df <- data.frame(
-      Variable = names(importance_vals),
-      Importance = importance_vals
-    ) %>% arrange(desc(Importance))
-  }
-  
-  selected_vars <- vsurf_interpretation
+count_selections <- function(sel_list, varnames) {
+  counts <- setNames(integer(length(varnames)), varnames)
+  for(s in sel_list) counts[intersect(s, varnames)] <- counts[intersect(s, varnames)] + 1L
+  sort(counts, decreasing = TRUE)
 }
 
-# Display results
-cat("STEP 1 - THRESHOLDING:", length(vsurf_threshold), "variables\n")
-if(length(vsurf_threshold) > 0) {
-  for(i in seq_along(vsurf_threshold)) {
-    cat("  ", i, ". ", vsurf_threshold[i], "\n", sep = "")
-  }
+thres_counts  <- count_selections(thres_list,  personality_vars)
+interp_counts <- count_selections(interp_list, personality_vars)
+pred_counts   <- count_selections(pred_list,   personality_vars)
+
+# Variables meeting majority threshold
+majority_thres  <- names(thres_counts[ thres_counts  >= majority_threshold])
+majority_interp <- names(interp_counts[interp_counts >= majority_threshold])
+majority_pred   <- names(pred_counts[  pred_counts   >= majority_threshold_pred])
+
+# Average importance across successful runs
+valid_imp   <- imp_list[!sapply(imp_list, function(x) all(is.na(x)))]
+mean_imp    <- if(length(valid_imp) > 0) {
+  imp_mat <- do.call(rbind, valid_imp)
+  colMeans(imp_mat, na.rm = TRUE)
+} else setNames(rep(NA_real_, length(personality_vars)), personality_vars)
+
+importance_df <- data.frame(
+  Variable         = personality_vars,
+  Mean_Importance  = mean_imp[personality_vars],
+  Thres_Count      = thres_counts[personality_vars],
+  Interp_Count     = interp_counts[personality_vars],
+  Pred_Count       = pred_counts[personality_vars],
+  Majority_Thres   = personality_vars %in% majority_thres,
+  Majority_Interp  = personality_vars %in% majority_interp,
+  Majority_Pred    = personality_vars %in% majority_pred,
+  stringsAsFactors = FALSE
+) %>% arrange(desc(Mean_Importance))
+
+cat("SELECTION COUNTS (out of", m, "runs):\n\n")
+print(importance_df %>%
+        select(Variable, Mean_Importance, Thres_Count, Interp_Count, Pred_Count),
+      row.names = FALSE, digits = 4)
+cat("\n")
+
+# Report majority sets
+cat(sprintf("MAJORITY THRESHOLD SET  (≥%d/25): %d variables\n",
+            majority_threshold, length(majority_thres)))
+for(v in majority_thres) cat(sprintf("  • %s  (%d/25)\n", v, thres_counts[v]))
+cat("\n")
+
+cat(sprintf("MAJORITY INTERPRETATION SET (≥%d/25): %d variables\n",
+            majority_threshold, length(majority_interp)))
+for(v in majority_interp) cat(sprintf("  • %s  (%d/25)\n", v, interp_counts[v]))
+cat("\n")
+
+cat(sprintf("MAJORITY PREDICTION SET (≥%d/25): %d variables\n",
+            majority_threshold_pred, length(majority_pred)))
+cat("→ USE THESE FOR LOGISTIC REGRESSION\n")
+for(v in majority_pred) cat(sprintf("  • %s  (%d/25)\n", v, pred_counts[v]))
+cat("\n")
+
+# EPV check on prediction set
+if(length(majority_pred) > 0) {
+  epv_pred <- round(n_events / length(majority_pred), 1)
+  cat(sprintf("EPV with prediction set: %d events / %d predictors = %.1f\n",
+              n_events, length(majority_pred), epv_pred))
+  if(epv_pred >= 10)
+    cat("✓ EPV ≥ 10 — adequate for logistic regression\n\n")
+  else if(epv_pred >= 5)
+    cat("~ EPV 5–9 — acceptable; interpret with caution\n\n")
+  else
+    cat("⚠️  EPV < 5 — consider further reduction before regression\n\n")
 }
-cat("\n")
 
-cat("STEP 2 - INTERPRETATION:", length(vsurf_interpretation), "variables\n")
-cat("→ USE THESE FOR EXPLANATORY MODEL\n")
-if(length(vsurf_interpretation) > 0) {
-  for(i in seq_along(vsurf_interpretation)) {
-    cat("  ", i, ". ", vsurf_interpretation[i], "\n", sep = "")
-  }
-}
-cat("\n")
-
-cat("STEP 3 - PREDICTION:", length(vsurf_prediction), "variables\n")
-if(length(vsurf_prediction) > 0) {
-  for(i in seq_along(vsurf_prediction)) {
-    cat("  ", i, ". ", vsurf_prediction[i], "\n", sep = "")
-  }
-}
-cat("\n")
-
-# Variable importance
-cat("VARIABLE IMPORTANCE (Top 15):\n")
-print(head(importance_df, 15), row.names = FALSE)
-cat("\n")
-
-# ==============================================================================
+#------------------------------------------------------------------------------
 # DOMAIN BREAKDOWN
-# ==============================================================================
+#------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("SELECTION BY PERSONALITY DOMAIN\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-if(length(selected_vars) > 0) {
-  domain_breakdown <- data.frame(
-    Variable = selected_vars,
-    Domain = case_when(
-      grepl("^BFI_", selected_vars) ~ "BFI",
-      grepl("^SURPS_", selected_vars) ~ "SURPS",
-      grepl("^DBAS_", selected_vars) ~ "DBAS",
-      grepl("^CISS_", selected_vars) ~ "CISS",
-      TRUE ~ "Other"
-    )
-  ) %>% arrange(Domain, Variable)
-  
-  domain_summary <- domain_breakdown %>%
+get_domain <- function(vars) {
+  dplyr::case_when(
+    grepl("^BFI_",  vars) ~ "BFI",
+    grepl("^SURPS_",vars) ~ "SURPS",
+    grepl("^DBAS_", vars) ~ "DBAS",
+    grepl("^CISS_", vars) ~ "CISS",
+    TRUE ~ "Other"
+  )
+}
+
+domain_totals <- c(BFI = 5, SURPS = 4, DBAS = 4, CISS = 3)
+
+if(length(majority_pred) > 0) {
+  pred_domain_df <- data.frame(
+    Variable = majority_pred,
+    Domain   = get_domain(majority_pred),
+    stringsAsFactors = FALSE
+  )
+
+  domain_summary <- pred_domain_df %>%
     count(Domain, name = "N_Selected") %>%
-    mutate(
-      N_Total = case_when(
-        Domain == "BFI" ~ 5,
-        Domain == "SURPS" ~ 4,
-        Domain == "DBAS" ~ 4,
-        Domain == "CISS" ~ 3,
-        TRUE ~ 0
-      ),
-      Percent = round(100 * N_Selected / N_Total, 1)
-    )
-  
+    mutate(N_Total  = domain_totals[Domain],
+           Pct      = round(100 * N_Selected / N_Total, 1))
+
+  cat("Prediction set — by domain:\n")
   print(domain_summary, row.names = FALSE)
   cat("\n")
-  
-  for(domain in unique(domain_breakdown$Domain)) {
-    vars_in_domain <- domain_breakdown %>% filter(Domain == domain)
-    cat(domain, "(", nrow(vars_in_domain), "):\n", sep = "")
-    for(i in 1:nrow(vars_in_domain)) {
-      cat("  •", vars_in_domain$Variable[i], "\n")
-    }
-    cat("\n")
-  }
+} else {
+  cat("⚠️  No variables met majority threshold in prediction set.\n")
+  cat("   Consider lowering threshold (e.g., ≥ 10/25) or reviewing VSURF output.\n\n")
+  domain_summary <- data.frame()
 }
 
-# ==============================================================================
+#------------------------------------------------------------------------------
 # VISUALIZATION
-# ==============================================================================
+#------------------------------------------------------------------------------
 
-cat("Creating visualization...\n")
+cat("Creating visualizations...\n")
 
-if(nrow(importance_df) > 0) {
-  plot_data <- importance_df %>%
-    head(15) %>%
-    mutate(
-      Domain = case_when(
-        grepl("^BFI_", Variable) ~ "BFI",
-        grepl("^SURPS_", Variable) ~ "SURPS",
-        grepl("^DBAS_", Variable) ~ "DBAS",
-        grepl("^CISS_", Variable) ~ "CISS",
-        TRUE ~ "Other"
-      ),
-      Selected = Variable %in% selected_vars
-    )
-  
-  p <- ggplot(plot_data, aes(x = reorder(Variable, Importance), 
-                              y = Importance, fill = Domain, alpha = Selected)) +
-    geom_col() +
-    scale_alpha_manual(values = c("TRUE" = 1.0, "FALSE" = 0.4),
-                       name = "VSURF Selected") +
-    coord_flip() +
-    scale_fill_brewer(palette = "Set2") +
-    labs(
-      title = "Variable Importance - Personality Predictors",
-      subtitle = paste("VSURF selected", length(selected_vars), "of", ncol(X), "variables"),
-      x = NULL,
-      y = "Variable Importance (Mean Decrease Gini)"
-    ) +
-    theme_minimal(base_size = 12) +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
-      plot.subtitle = element_text(hjust = 0.5),
-      legend.position = "bottom"
-    )
-  
-  ggsave("VSURF_personality_importance.png", p, width = 10, height = 8, dpi = 300)
-  cat("✓ Saved: VSURF_personality_importance.png\n\n")
-}
+# Plot 1: Mean importance with selection counts
+plot_data <- importance_df %>%
+  mutate(
+    Domain    = get_domain(Variable),
+    In_Pred   = Majority_Pred,
+    Var_Label = gsub("^(BFI|SURPS|DBAS|CISS)_", "", Variable)
+  )
 
-# ==============================================================================
+p1 <- ggplot(plot_data,
+             aes(x    = reorder(Variable, Mean_Importance),
+                 y    = Mean_Importance,
+                 fill = Domain,
+                 alpha = In_Pred)) +
+  geom_col() +
+  geom_text(aes(label = sprintf("%d/25", Pred_Count)),
+            hjust = -0.1, size = 3.2) +
+  scale_alpha_manual(values = c("TRUE" = 1.0, "FALSE" = 0.35),
+                     labels = c("TRUE" = "In majority prediction set",
+                                "FALSE" = "Not selected"),
+                     name = NULL) +
+  scale_fill_brewer(palette = "Set2", name = "Domain") +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title    = "Variable Importance — Personality Predictors",
+    subtitle = sprintf("VSURF majority vote across 25 imputations  |  prediction set: %d variables",
+                       length(majority_pred)),
+    x        = NULL,
+    y        = "Mean Variable Importance (averaged across imputations)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 10),
+    legend.position = "bottom"
+  )
+
+ggsave("VSURF_personality_importance.png", p1, width = 11, height = 8, dpi = 300)
+cat("✓ Saved: VSURF_personality_importance.png\n")
+
+# Plot 2: Selection stability heatmap (pred set counts per variable)
+stability_data <- importance_df %>%
+  select(Variable, Thres_Count, Interp_Count, Pred_Count) %>%
+  tidyr::pivot_longer(cols = -Variable,
+                      names_to  = "Step",
+                      values_to = "Count") %>%
+  mutate(Step = factor(Step,
+                       levels = c("Thres_Count", "Interp_Count", "Pred_Count"),
+                       labels = c("Threshold", "Interpretation", "Prediction")),
+         Variable = factor(Variable,
+                           levels = importance_df$Variable[order(importance_df$Mean_Importance)]))
+
+p2 <- ggplot(stability_data, aes(x = Step, y = Variable, fill = Count)) +
+  geom_tile(colour = "white", linewidth = 0.5) +
+  geom_text(aes(label = Count), size = 3.2, colour = "white", fontface = "bold") +
+  geom_hline(yintercept = length(personality_vars) - length(majority_pred) + 0.5,
+             colour = "black", linewidth = 0.8, linetype = "dashed") +
+  scale_fill_gradient(low = "#d9f0d3", high = "#1a7340",
+                      limits = c(0, m), name = "Times\nselected") +
+  labs(
+    title    = "VSURF Selection Stability Across 25 Imputations",
+    subtitle = sprintf("Dashed line = majority threshold (%d/25)", majority_threshold),
+    x        = "VSURF Step",
+    y        = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.text.y   = element_text(size = 10)
+  )
+
+ggsave("VSURF_personality_stability.png", p2, width = 8, height = 8, dpi = 300)
+cat("✓ Saved: VSURF_personality_stability.png\n\n")
+
+#------------------------------------------------------------------------------
 # SAVE RESULTS
-# ==============================================================================
+#------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("SAVING RESULTS\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-vsurf_output <- list(
-  vsurf_object = vsurf_result,
-  selected_vars = selected_vars,
-  vsurf_threshold = vsurf_threshold,
-  vsurf_interpretation = vsurf_interpretation,
-  vsurf_prediction = vsurf_prediction,
-  importance_df = importance_df,
-  domain_summary = if(exists("domain_summary")) domain_summary else data.frame(),
+vsurf_personality_output <- list(
+
+  # FINAL SELECTIONS (majority vote)
+  majority_pred    = majority_pred,      # ← USE FOR REGRESSION
+  majority_interp  = majority_interp,
+  majority_thres   = majority_thres,
+
+  # Per-imputation raw selections
+  pred_list        = pred_list,
+  interp_list      = interp_list,
+  thres_list       = thres_list,
+
+  # Selection counts and importance
+  importance_df    = importance_df,
+  pred_counts      = pred_counts,
+  interp_counts    = interp_counts,
+  thres_counts     = thres_counts,
+
+  # Domain summary
+  domain_summary   = domain_summary,
+
+  # Metadata
   metadata = list(
-    outcome = outcome_var,
-    n_obs = nrow(X),
-    n_input = ncol(X),
-    n_selected = length(selected_vars),
-    time_minutes = time_taken
+    input_vars              = personality_vars,
+    outcome                 = outcome_var,
+    m                       = m,
+    N                       = N,
+    n_events                = n_events,
+    majority_threshold      = majority_threshold,       # ≥13/25 for thres + interp
+    majority_threshold_pred = majority_threshold_pred,  # ≥10/25 for prediction set
+    n_pred_selected         = length(majority_pred),
+    n_interp_selected       = length(majority_interp),
+    n_thres_selected        = length(majority_thres),
+    failed_runs             = failed_runs,
+    time_minutes            = as.numeric(time_taken),
+    seed_base               = 12345
   )
 )
 
-saveRDS(vsurf_output, "VSURF_personality_results.rds")
-saveRDS(selected_vars, "VSURF_personality_selected.rds")
+saveRDS(vsurf_personality_output, "VSURF_personality_results.rds")
+# Also save just the prediction set — loaded by regression chunk
+saveRDS(majority_pred,            "VSURF_personality_selected.rds")
 
 cat("✓ Saved: VSURF_personality_results.rds\n")
 cat("✓ Saved: VSURF_personality_selected.rds\n\n")
 
-# ==============================================================================
+write.csv(importance_df, "VSURF_personality_importance_table.csv", row.names = FALSE)
+cat("✓ Saved: VSURF_personality_importance_table.csv\n\n")
+
+#------------------------------------------------------------------------------
 # SUMMARY
-# ==============================================================================
+#------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("CHUNK 11A COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("FINAL SELECTION:\n")
-cat("  Variables selected:", length(selected_vars), "\n")
-cat("  Sample size:", nrow(X), "\n")
-cat("  Events per variable:", round(outcome_table[2] / length(selected_vars), 1), "\n\n")
+cat(sprintf("VSURF ran on %d imputations (%d failed)\n",
+            m, length(failed_runs)))
+cat(sprintf("Majority threshold: ≥ %d / %d runs\n\n", majority_threshold, m))
 
-cat("SELECTED PERSONALITY VARIABLES:\n")
-for(i in seq_along(selected_vars)) {
-  cat("  ", i, ". ", selected_vars[i], "\n", sep = "")
+cat("FINAL SELECTIONS:\n")
+cat(sprintf("  Threshold set:      %d variables\n", length(majority_thres)))
+cat(sprintf("  Interpretation set: %d variables\n", length(majority_interp)))
+cat(sprintf("  Prediction set:     %d variables  ← FOR REGRESSION\n\n",
+            length(majority_pred)))
+
+if(length(majority_pred) > 0) {
+  cat("PREDICTION SET VARIABLES:\n")
+  for(i in seq_along(majority_pred))
+    cat(sprintf("  %d. %s  (selected in %d/25 runs)\n",
+                i, majority_pred[i], pred_counts[majority_pred[i]]))
+  cat(sprintf("\n  EPV: %d / %d = %.1f\n",
+              n_events, length(majority_pred),
+              n_events / length(majority_pred)))
+} else {
+  cat("⚠️  No variables selected in prediction set.\n")
+  cat("   Load VSURF_personality_results.rds and review pred_counts\n")
+  cat("   to decide on a lower threshold (e.g., ≥ 10/25).\n")
 }
-cat("\n")
 
-cat("✓ Ready for logistic regression modeling\n\n")
+cat("\n✓ Ready for Chunk 12A: logistic regression (personality model)\n\n")
 ```
+
+
 
 
 
