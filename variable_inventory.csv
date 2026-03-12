@@ -6,6 +6,7 @@
 "income","numeric",388,9,2.3,"Demographics"
 "employment","numeric",397,0,0,"Demographics"
 "driving_freq","numeric",362,35,8.8,"Demographics"
+"prov_terr","numeric",397,0,0,"Demographics"
 "phq2_score","numeric",397,0,0,"Clinical: Health"
 "osss_3_score","numeric",397,0,0,"Clinical: Health"
 "gen_health","ordered/factor",397,0,0,"Clinical: Health"

@@ -1,3 +1,3 @@
 Model,Description,N_MI,N_CC,MI_AUC,CC_AUC,AUC_Diff
-Model 3,VSURF Prediction (personality only),397,333,"0.733 [0.670, 0.791]","0.705 [0.630, 0.781]",-0.028
-Model 4,VSURF Prediction + age + sex,397,333,"0.739 [0.681, 0.796]","0.716 [0.647, 0.788]",-0.024
+Model A,Personality interpretation set,397,333,"0.679 [0.611, 0.745]","0.699 [0.624, 0.772]",0.019
+Model B,Full prediction set,397,333,"0.845 [0.793, 0.892]","0.872 [0.820, 0.919]",0.027

@@ -1,0 +1,4 @@
+term,MI_OR_CI,MI_sig,CC_OR_CI,CC_sig,OR_change_pct,Direction,Sig_consistency
+DBAS_Medications,"0.68 [0.58, 0.79]",***,"0.65 [0.55, 0.75]",***,-5.1,CC lower,Both significant
+CISS_Emotion,"0.82 [0.58, 1.17]",,"0.82 [0.57, 1.17]",,-0.6,CC lower,Both non-significant
+DBAS_Consequences,"1.11 [0.95, 1.29]",,"1.12 [0.96, 1.31]",,1.2,CC higher,Both non-significant

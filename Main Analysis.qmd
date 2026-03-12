@@ -2271,7 +2271,7 @@ cat("═════════════════════════
 outcome <- "scrn_stopped_bzra"
 
 # Core demographics
-core_demographics <- c("age", "sex", "education", "income", "employment", "driving_freq")
+core_demographics <- c("age", "sex", "education", "income", "employment", "driving_freq", "prov_terr")
 
 # Health/clinical variables
 health_vars <- c("phq2_score", "osss_3_score", "gen_health", "med_quant")
@@ -7282,1193 +7282,787 @@ cat("\n✓ Ready for Chunk 12A: logistic regression (personality model)\n\n")
 
 
 
-## CLIN VSURF
+## FULL VSURF
 ```{r}
 #==============================================================================
-# CHUNK 11B: VSURF VARIABLE SELECTION (CLINICAL PREDICTORS)
+# CHUNK 11B: VSURF VARIABLE SELECTION (ALL PREDICTORS — FULL MODEL)
 #==============================================================================
-# Purpose: Select important clinical/health variables for BZRA discontinuation
-# Strategy: Apply VSURF to clinical block
-# Rationale: Identify key health and medication factors
-# Output: Reduced set of clinical predictors for logistic regression
+# Purpose:
+#   Select important predictors of BZRA discontinuation from the full candidate
+#   set, covering demographics, clinical, sleep/adverse effects, behavioural,
+#   and personality domains.
+#
+# Strategy (Option 1 — MI-appropriate):
+#   Run VSURF independently on each of the 25 imputed datasets.
+#   Majority-vote: ≥13/25 for threshold and interpretation sets,
+#                  ≥10/25 for prediction set (consistent with Chunk 11A).
+#   Use the PREDICTION set for downstream logistic regression.
+#
+# On withdrawal variables (stop_wdl_exp_combined, wdl_symptom_count):
+#   Included as legitimate predictors. Both variables capture prior withdrawal
+#   experiences when the participant attempted to stop BZRAs — this is
+#   measured history, not concurrent outcome. Their large effect sizes
+#   (V=0.53, d=-1.06 in Chunk 10) make them important to include; if they
+#   dominate VSURF selection that is itself a meaningful finding.
+#
+# On DBAS_Total:
+#   Excluded — not used in any prior analysis chunk; only the four DBAS
+#   subscales (Consequences, Worry_Helplessness, Expectations, Medications)
+#   are carried forward here for consistency.
+#
+# References:
+#   Genuer R, Poggi J-M, Tuleau-Malot C (2015). VSURF: An R Package for
+#     Variable Selection Using Random Forests. R Journal, 7(2):19-33.
+#   Rubin, D.B. (1987). Multiple Imputation for Nonresponse in Surveys.
 #==============================================================================
 
 library(VSURF)
-library(tidyverse)
-library(mice)
-library(randomForest)
+library(dplyr)
+library(tidyr)
 library(ggplot2)
 
 cat("\n")
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("CHUNK 11B: VSURF VARIABLE SELECTION (CLINICAL)\n")
+cat("CHUNK 11B: VSURF VARIABLE SELECTION (FULL MODEL)\n")
+cat("MI-appropriate: majority vote across all 25 imputations\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Load imputed data
-if(!file.exists("imputed_data_with_subscales.rds")) {
-  stop("ERROR: Run Chunk 9 first")
-}
+#------------------------------------------------------------------------------
+# LOAD DATA
+#------------------------------------------------------------------------------
 
-mids_data <- readRDS("imputed_data_with_subscales.rds")
-cat("✓ Loaded imputed data with", mids_data$m, "imputations\n\n")
+if(!file.exists("imputed_datasets_complete_final.rds"))
+  stop("ERROR: imputed_datasets_complete_final.rds not found. Run Chunk 9 first.")
 
-# Get outcome variable
+all_imputed <- readRDS("imputed_datasets_complete_final.rds")
+m           <- length(all_imputed)
+N           <- nrow(all_imputed[[1]])
+
+# Convenience alias for variable-availability checks
+d1 <- all_imputed[[1]]
+
+cat(sprintf("✓ Loaded imputed_datasets_complete_final.rds\n"))
+cat(sprintf("  Imputations (m): %d\n", m))
+cat(sprintf("  Observations (N): %d\n\n", N))
+
 outcome_var <- "scrn_stopped_bzra"
 
-# ==============================================================================
-# DEFINE CLINICAL VARIABLES
-# ==============================================================================
+#------------------------------------------------------------------------------
+# FULL CANDIDATE PREDICTOR SET
+#------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("DEFINING CLINICAL VARIABLES\n")
+cat("FULL CANDIDATE PREDICTOR SET\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-# Clinical/health variables
-clinical_vars <- c(
-  # Basic clinical
-  "phq2_score", "osss_3_score", "gen_health", "med_quant",
-  
-  # Condition counts
-  "n_physical_conditions", "n_ment_conditions", 
-  "n_sleep_conditions", "n_health_conditions",
-  
-  # Sleep aids
-  "alc_sleep", "can_sleep", "melatonin_use", "op_sleep",
-  
-  # Side effects (continuous Likert)
-  paste0("side_effects_", 1:4),
-  
-  # Safety concerns (continuous Likert)
-  paste0("safety_", 1:4),
-  
-  # ADL impact (continuous Likert)
-  paste0("adls_", 1:2),
-  
-  # Dependence (continuous Likert)
-  paste0("dependence_", 1:3)
+# ── Demographics ──────────────────────────────────────────────────────────────
+demographics <- c(
+  "age", "sex", "education", "income", "employment",
+  "driving_freq", "prov_terr"
 )
 
-# NOTE: Withdrawal variables EXCLUDED (temporal ordering)
-# - stop_wdl_exp_combined
-# - wdl_symptom_count
+# ── Clinical ──────────────────────────────────────────────────────────────────
+clinical <- c(
+  # Core health
+  "phq2_score", "osss_3_score", "gen_health", "med_quant",
+  "n_physical_conditions", "n_ment_conditions",
+  "n_sleep_conditions", "n_health_conditions",
+  # BZRA dose (weekly excluded — perfect collinearity with daily; see Chunk 7)
+  "bzra_daily_diazepam_eq",
+  # Length of BZRA use
+  "c_lengthofuse",
+  # Medication burden (4 separate items — no composite)
+  "med_burden_1", "med_burden2", "medburden_3", "med_burden_4",
+  # BMQ Necessity raw items (beliefs about medication necessity;
+  # composite deferred post-imputation)
+  "benefit_1", "benefit_4", "benefit_5", "benefit_6", "benefit_dep",
+  # Stop rate (how quickly stopped: abruptly / slowly / very slowly)
+  "stop_rate_dc",
+  # Reasons for stopping / would stop (17 items; same scale, different framing
+  # for current vs former users — coalesced in Chunk 5)
+  "memory", "thinking", "activities", "socialize", "driving",
+  "balance", "falls", "indication", "efficacy", "alternative",
+  "inf_soc", "inf_pres", "inf_rphc", "interactions",
+  "dependence", "reduc", "cost"
+)
 
-cat("CLINICAL VARIABLES (", length(clinical_vars), "):\n\n", sep = "")
-cat("  Basic Clinical (4): phq2_score, osss_3_score, gen_health, med_quant\n")
-cat("  Condition Counts (4): n_physical, n_mental, n_sleep, n_health\n")
-cat("  Sleep Aids (4): alc_sleep, can_sleep, melatonin_use, op_sleep\n")
-cat("  Side Effects (4): side_effects_1-4\n")
-cat("  Safety (4): safety_1-4\n")
-cat("  ADLs (2): adls_1-2\n")
-cat("  Dependence (3): dependence_1-3\n\n")
+# ── Sleep / Adverse effects ───────────────────────────────────────────────────
+# Withdrawal variables included: prior withdrawal history is measured patient
+# history, not concurrent outcome. See header note.
+sleep_adverse <- c(
+  "alc_sleep", "can_sleep", "melatonin_use", "op_sleep",
+  paste0("side_effects_", 1:4),
+  paste0("safety_", 1:4),
+  paste0("adls_", 1:2),
+  paste0("dependence_", 1:3),
+  "stop_wdl_exp_combined", "wdl_symptom_count"
+)
 
-cat("EXCLUDED (temporal ordering):\n")
-cat("  • stop_wdl_exp_combined (occurs during cessation)\n")
-cat("  • wdl_symptom_count (occurs during cessation)\n\n")
+# ── Behavioural ───────────────────────────────────────────────────────────────
+behavioural <- c(
+  # COM-B items only
+  paste0("motivation_", 1:3),
+  paste0("desires_", 1:3),
+  "capability_1", "capability"
+)
 
-# ==============================================================================
-# PREPARE DATA
-# ==============================================================================
+# ── Personality subscales ─────────────────────────────────────────────────────
+# DBAS_Total excluded — not used in any prior analysis chunk.
+# Only the four DBAS subscales are included for consistency.
+personality <- c(
+  # BFI-10 (5 subscales — all 2-item; see note on Spearman-Brown reliability)
+  "BFI_Extraversion", "BFI_Agreeableness", "BFI_Conscientiousness",
+  "BFI_Neuroticism", "BFI_Openness",
+  # SURPS (4 subscales)
+  "SURPS_Impulsivity", "SURPS_Sensation_Seeking",
+  "SURPS_Hopelessness", "SURPS_Anxiety_Sensitivity",
+  # DBAS-16 (4 subscales only)
+  "DBAS_Consequences", "DBAS_Worry_Helplessness",
+  "DBAS_Expectations", "DBAS_Medications",
+  # CISS (3 subscales)
+  "CISS_Task", "CISS_Emotion", "CISS_Avoidance"
+)
 
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("PREPARING DATA\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
+all_vars <- c(demographics, clinical, sleep_adverse, behavioural, personality)
 
-# Extract first imputation
-data_complete <- complete(mids_data, 1)
+# Remove any duplicates
+all_vars <- unique(all_vars)
 
-# Check variable availability
-available_vars <- clinical_vars[clinical_vars %in% names(data_complete)]
-missing_vars <- clinical_vars[!clinical_vars %in% names(data_complete)]
+# Restrict to variables actually present in the imputed data
+all_vars <- all_vars[all_vars %in% names(d1)]
 
+# Report
+cat(sprintf("Demographics   (%2d): %s\n",
+            length(demographics),
+            paste(demographics, collapse = ", ")))
+cat(sprintf("Clinical       (%2d): %s\n",
+            length(clinical),
+            paste(clinical, collapse = ", ")))
+cat(sprintf("Sleep/Adverse  (%2d): %s\n",
+            length(sleep_adverse),
+            paste(sleep_adverse, collapse = ", ")))
+cat(sprintf("Behavioural    (%2d): %s\n",
+            length(behavioural),
+            paste(behavioural, collapse = ", ")))
+cat(sprintf("Personality    (%2d): %s\n",
+            length(personality),
+            paste(personality, collapse = ", ")))
+cat(sprintf("\nTotal candidate predictors (after availability check): %d\n",
+            length(all_vars)))
+cat("DBAS_Total excluded (not used in prior chunks)\n\n")
+
+# Warn about any variables declared above but absent from data
+all_declared <- unique(c(demographics, clinical, sleep_adverse,
+                          behavioural, personality))
+missing_vars  <- all_declared[!all_declared %in% names(d1)]
 if(length(missing_vars) > 0) {
-  cat("⚠️  WARNING: Missing variables:\n")
-  for(var in missing_vars) cat("    •", var, "\n")
+  cat(sprintf("⚠️  %d declared variables not found in data (excluded):\n",
+              length(missing_vars)))
+  for(v in missing_vars) cat("  •", v, "\n")
   cat("\n")
+} else {
+  cat(sprintf("✓ All %d declared variables confirmed in imputed data\n\n",
+              length(all_declared)))
 }
 
-cat("Available clinical variables:", length(available_vars), "of", length(clinical_vars), "\n\n")
-
-# Prepare predictor matrix
-X <- data_complete %>%
-  select(all_of(available_vars)) %>%
-  select(where(~ !all(is.na(.))))
-
-# Prepare outcome
-if(!outcome_var %in% names(data_complete)) {
-  stop("ERROR: Outcome variable '", outcome_var, "' not found!")
+# ── Domain lookup ─────────────────────────────────────────────────────────────
+get_family <- function(var) {
+  dplyr::case_when(
+    var %in% demographics  ~ "Demographics",
+    var %in% clinical      ~ "Clinical",
+    var %in% sleep_adverse ~ "Sleep_Adverse",
+    var %in% behavioural   ~ "Behavioural",
+    var %in% personality   ~ "Personality",
+    TRUE                   ~ "Other"
+  )
 }
 
-y <- data_complete[[outcome_var]]
+#------------------------------------------------------------------------------
+# CATEGORICAL vs CONTINUOUS VARIABLE LISTS
+#------------------------------------------------------------------------------
 
-# Remove missing outcomes
-complete_idx <- !is.na(y)
-X <- X[complete_idx, ]
-y <- y[complete_idx]
-y <- factor(y, levels = c(0, 1), labels = c("Continued", "Discontinued"))
-y <- droplevels(y)
+cat_vars <- c(
+  "sex", "education", "income", "employment", "driving_freq", "prov_terr",
+  "gen_health", "alc_sleep", "can_sleep", "melatonin_use", "op_sleep",
+  "stop_wdl_exp_combined", "stop_rate_dc"
+)
+cat_vars  <- cat_vars[cat_vars %in% names(d1)]
+cont_vars <- all_vars[!all_vars %in% cat_vars]
 
-cat("Data for VSURF:\n")
-cat("  Observations:", nrow(X), "\n")
-cat("  Predictors:", ncol(X), "\n")
-cat("  Outcome:", outcome_var, "\n\n")
+cat(sprintf("Categorical variables (kept as factors): %d\n", length(cat_vars)))
+cat(sprintf("  %s\n", paste(cat_vars, collapse = ", ")))
+cat(sprintf("Continuous/ordinal variables:            %d\n\n", length(cont_vars)))
 
-cat("Outcome distribution:\n")
-outcome_table <- table(y)
-print(outcome_table)
-cat("\n  Discontinuation rate:", round(100 * outcome_table[2] / sum(outcome_table), 1), "%\n")
-cat("  Events per variable:", round(outcome_table[2] / ncol(X), 1), "\n\n")
+#------------------------------------------------------------------------------
+# EVENTS-PER-VARIABLE CHECK
+#------------------------------------------------------------------------------
 
-# ==============================================================================
-# RUN VSURF
-# ==============================================================================
+n_events  <- sum(d1[[outcome_var]] == 1, na.rm = TRUE)
+epv_input <- round(n_events / length(all_vars), 1)
+
+cat("EPV CHECK (input variables):\n")
+cat(sprintf("  Events (discontinuers): %d\n", n_events))
+cat(sprintf("  Input variables:        %d\n", length(all_vars)))
+cat(sprintf("  EPV at input stage:     %.1f\n", epv_input))
+cat("  Note: EPV constraint applies to the FINAL regression model,\n")
+cat("  not to VSURF input. VSURF will reduce this to a feasible set.\n\n")
+
+#------------------------------------------------------------------------------
+# PREPARE RECODE FUNCTION
+# Apply consistent factor coding across all imputations
+#------------------------------------------------------------------------------
+
+recode_for_vsurf <- function(df) {
+
+  if("sex" %in% names(df))
+    df$sex <- factor(df$sex, levels = c(1, 2), labels = c("Female", "Male"))
+
+  if("prov_terr" %in% names(df)) {
+    df$prov_terr <- dplyr::case_when(
+      df$prov_terr %in% c(1, 2, 3, 12) ~ "Western Canada",
+      df$prov_terr %in% c(9, 11)        ~ "Central Canada",
+      df$prov_terr %in% c(4, 5, 7, 10)  ~ "Atlantic Canada",
+      TRUE                               ~ "Territories"
+    )
+    df$prov_terr <- factor(df$prov_terr,
+      levels = c("Western Canada", "Central Canada",
+                 "Atlantic Canada", "Territories"))
+  }
+
+  if("employment" %in% names(df)) {
+    df$employment <- dplyr::case_when(
+      df$employment %in% c(0, 3, 4) ~ "Not in Workforce",
+      df$employment %in% c(1, 2)    ~ "Full- or Part-Time Work",
+      TRUE                           ~ NA_character_
+    )
+    df$employment <- factor(df$employment,
+      levels = c("Full- or Part-Time Work", "Not in Workforce"))
+  }
+
+  if("education" %in% names(df)) {
+    df$education <- dplyr::case_when(
+      df$education %in% c(1, 2, 3) ~ "High School or Less",
+      df$education %in% c(4, 5)    ~ "Trade School/University Degree",
+      TRUE                          ~ NA_character_
+    )
+    df$education <- factor(df$education,
+      levels = c("High School or Less", "Trade School/University Degree"))
+  }
+
+  if("income" %in% names(df))
+    df$income <- factor(df$income, levels = 1:5,
+      labels = c("$15,000 or less", "$15,000 to $30,000", "$30,000 to $50,000",
+                 "$50,000 to $80,000", "$80,000 or more"))
+
+  if("driving_freq" %in% names(df))
+    df$driving_freq <- factor(df$driving_freq, levels = 0:3,
+      labels = c("Do not drive", "Less than 1 day/week",
+                 "1-3 days/week", "4-7 days/week"))
+
+  if("gen_health" %in% names(df))
+    df$gen_health <- factor(df$gen_health, levels = 1:5,
+      labels = c("Poor", "Fair", "Good", "Very good", "Excellent"))
+
+  sleep_freq_labels <- c("Less than 1 day/week", "1-3 days/week",
+                         "4-6 days/week", "7 days/week")
+  for(sv in c("alc_sleep", "can_sleep", "melatonin_use", "op_sleep"))
+    if(sv %in% names(df))
+      df[[sv]] <- factor(df[[sv]], levels = 1:4, labels = sleep_freq_labels)
+
+  if("stop_wdl_exp_combined" %in% names(df))
+    df$stop_wdl_exp_combined <- factor(df$stop_wdl_exp_combined, levels = 0:5,
+      labels = c("No withdrawal", "Insomnia only", "Anxiety only",
+                 "Other MH symptoms only", "Physical symptoms only",
+                 "Multiple symptoms"))
+
+  if("stop_rate_dc" %in% names(df))
+    df$stop_rate_dc <- factor(df$stop_rate_dc, levels = 0:2,
+      labels = c("Abruptly (cold turkey)",
+                 "Slowly (1-4 weeks)",
+                 "Very slowly (>4 weeks)"),
+      ordered = TRUE)
+
+  # Likert scales to numeric
+  likert_vars <- c(
+    paste0("side_effects_", 1:4), paste0("safety_", 1:4),
+    paste0("adls_", 1:2), paste0("dependence_", 1:3),
+    "med_burden_1", "med_burden2", "medburden_3", "med_burden_4",
+    "benefit_1", "benefit_4", "benefit_5", "benefit_6", "benefit_dep",
+    "memory", "thinking", "activities", "socialize", "driving",
+    "balance", "falls", "indication", "efficacy", "alternative",
+    "inf_soc", "inf_pres", "inf_rphc", "interactions",
+    "dependence", "reduc", "cost"
+  )
+  for(var in likert_vars)
+    if(var %in% names(df) && !is.numeric(df[[var]]))
+      df[[var]] <- as.numeric(as.character(df[[var]]))
+
+  df
+}
+
+#------------------------------------------------------------------------------
+# MAJORITY-VOTE VSURF ACROSS ALL m IMPUTATIONS
+#------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
-cat("RUNNING VSURF\n")
+cat("RUNNING VSURF ON ALL 25 IMPUTATIONS\n")
+cat("(this will take longer than 11A — expect 20-40 minutes)\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("VSURF Algorithm:\n")
-cat("  1. THRESHOLDING - Remove irrelevant variables\n")
-cat("  2. INTERPRETATION - Variables for explanatory models\n")
-cat("  3. PREDICTION - Minimal set for pure prediction\n\n")
+majority_threshold      <- ceiling(m / 2)   # ≥ 13/25 for threshold + interp
+majority_threshold_pred <- 10L               # ≥ 10/25 for prediction set
 
-cat("Running VSURF (may take several minutes)...\n\n")
+cat(sprintf("Majority-vote threshold (threshold/interp sets): ≥ %d / %d runs\n",
+            majority_threshold, m))
+cat(sprintf("Majority-vote threshold (prediction set):        ≥ %d / %d runs\n\n",
+            majority_threshold_pred, m))
 
-set.seed(12345)
+# Storage
+thres_list  <- vector("list", m)
+interp_list <- vector("list", m)
+pred_list   <- vector("list", m)
+imp_list    <- vector("list", m)
+failed_runs <- integer(0)
+
 start_time <- Sys.time()
 
-vsurf_result <- tryCatch({
-  VSURF(
-    x = X,
-    y = y,
-    ntree = 2000,
-    mtry = max(floor(ncol(X)/3), 1),
-    parallel = FALSE,
-    verbose = TRUE
-  )
-}, error = function(e) {
-  cat("\n✗ ERROR:", e$message, "\n")
-  return(NULL)
-})
+for(i in seq_len(m)) {
 
-end_time <- Sys.time()
-time_taken <- round(difftime(end_time, start_time, units = "mins"), 2)
+  cat(sprintf("  Imputation %2d / %d ... ", i, m))
 
-cat("\n✓ VSURF completed in", time_taken, "minutes\n\n")
+  df <- recode_for_vsurf(all_imputed[[i]])
 
-# ==============================================================================
-# EXTRACT RESULTS
-# ==============================================================================
+  # Build predictor matrix — only confirmed available variables
+  X <- df[, all_vars, drop = FALSE]
 
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("VSURF RESULTS\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-if(is.null(vsurf_result)) {
-  # Fallback: Standard RF importance
-  cat("⚠️  VSURF failed - using fallback (RF importance)\n\n")
-  
-  set.seed(12345)
-  rf_model <- randomForest(x = X, y = y, importance = TRUE, ntree = 2000)
-  
-  importance_vals <- importance(rf_model)[, "MeanDecreaseGini"]
-  importance_df <- data.frame(
-    Variable = names(importance_vals),
-    Importance = importance_vals
-  ) %>% arrange(desc(Importance))
-  
-  # Select top 10
-  selected_vars <- importance_df$Variable[1:min(10, nrow(importance_df))]
-  
-  vsurf_threshold <- selected_vars
-  vsurf_interpretation <- selected_vars
-  vsurf_prediction <- selected_vars[1:min(5, length(selected_vars))]
-  
-} else {
-  # Extract VSURF results
-  vsurf_threshold <- names(X)[vsurf_result$varselect.thres]
-  vsurf_interpretation <- names(X)[vsurf_result$varselect.interp]
-  vsurf_prediction <- names(X)[vsurf_result$varselect.pred]
-  
-  # Get importance
-  if(length(vsurf_threshold) > 0) {
-    importance_df <- data.frame(
-      Variable = vsurf_threshold,
-      Importance = vsurf_result$imp.varselect.thres
-    ) %>% arrange(desc(Importance))
-  } else {
-    set.seed(12345)
-    rf_model <- randomForest(x = X, y = y, importance = TRUE, ntree = 2000)
-    importance_vals <- importance(rf_model)[, "MeanDecreaseGini"]
-    importance_df <- data.frame(
-      Variable = names(importance_vals),
-      Importance = importance_vals
-    ) %>% arrange(desc(Importance))
+  # Ensure factor columns are properly encoded (drop unused levels)
+  for(v in cat_vars) {
+    if(v %in% names(X) && is.factor(X[[v]]))
+      X[[v]] <- droplevels(X[[v]])
   }
-  
-  selected_vars <- vsurf_interpretation
-}
 
-# Display results
-cat("STEP 1 - THRESHOLDING:", length(vsurf_threshold), "variables\n")
-if(length(vsurf_threshold) > 0) {
-  for(i in seq_along(vsurf_threshold)) {
-    cat("  ", i, ". ", vsurf_threshold[i], "\n", sep = "")
+  # Convert non-factor, non-numeric columns to numeric
+  for(v in names(X)) {
+    if(!is.factor(X[[v]]) && !is.numeric(X[[v]]))
+      X[[v]] <- as.numeric(as.character(X[[v]]))
   }
-}
-cat("\n")
 
-cat("STEP 2 - INTERPRETATION:", length(vsurf_interpretation), "variables\n")
-cat("→ USE THESE FOR EXPLANATORY MODEL\n")
-if(length(vsurf_interpretation) > 0) {
-  for(i in seq_along(vsurf_interpretation)) {
-    cat("  ", i, ". ", vsurf_interpretation[i], "\n", sep = "")
-  }
-}
-cat("\n")
+  X <- as.data.frame(X)
 
-cat("STEP 3 - PREDICTION:", length(vsurf_prediction), "variables\n")
-if(length(vsurf_prediction) > 0) {
-  for(i in seq_along(vsurf_prediction)) {
-    cat("  ", i, ". ", vsurf_prediction[i], "\n", sep = "")
-  }
-}
-cat("\n")
+  # Outcome
+  y  <- factor(df[[outcome_var]], levels = c(0, 1),
+               labels = c("Continued", "Discontinued"))
+  ok <- !is.na(y)
+  X  <- X[ok, ]
+  y  <- droplevels(y[ok])
 
-# Variable importance
-cat("VARIABLE IMPORTANCE (Top 20):\n")
-print(head(importance_df, 20), row.names = FALSE)
-cat("\n")
+  set.seed(12345 + i)
 
-# ==============================================================================
-# CATEGORY BREAKDOWN
-# ==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("SELECTION BY CLINICAL CATEGORY\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-if(length(selected_vars) > 0) {
-  category_breakdown <- data.frame(
-    Variable = selected_vars,
-    Category = case_when(
-      selected_vars %in% c("phq2_score", "osss_3_score", "gen_health", "med_quant") ~ "Basic Clinical",
-      grepl("^n_", selected_vars) ~ "Condition Counts",
-      selected_vars %in% c("alc_sleep", "can_sleep", "melatonin_use", "op_sleep") ~ "Sleep Aids",
-      grepl("^side_effects_", selected_vars) ~ "Side Effects",
-      grepl("^safety_", selected_vars) ~ "Safety",
-      grepl("^adls_", selected_vars) ~ "ADLs",
-      grepl("^dependence_", selected_vars) ~ "Dependence",
-      TRUE ~ "Other"
-    )
-  ) %>% arrange(Category, Variable)
-  
-  category_summary <- category_breakdown %>%
-    count(Category, name = "N_Selected")
-  
-  print(category_summary, row.names = FALSE)
-  cat("\n")
-  
-  for(category in unique(category_breakdown$Category)) {
-    vars_in_cat <- category_breakdown %>% filter(Category == category)
-    cat(category, "(", nrow(vars_in_cat), "):\n", sep = "")
-    for(i in 1:nrow(vars_in_cat)) {
-      cat("  •", vars_in_cat$Variable[i], "\n")
+  vsurf_i <- tryCatch(
+    VSURF(
+      x        = X,
+      y        = y,
+      ntree    = 2000,
+      mtry     = max(floor(sqrt(ncol(X))), 1),  # sqrt rule for classification
+      parallel = FALSE,
+      verbose  = FALSE
+    ),
+    error = function(e) {
+      cat(sprintf("FAILED (%s)\n", e$message))
+      NULL
     }
+  )
+
+  if(is.null(vsurf_i)) {
+    failed_runs      <- c(failed_runs, i)
+    thres_list[[i]]  <- character(0)
+    interp_list[[i]] <- character(0)
+    pred_list[[i]]   <- character(0)
+    imp_list[[i]]    <- setNames(rep(NA_real_, length(all_vars)), all_vars)
+    next
+  }
+
+  thres_list[[i]]  <- all_vars[vsurf_i$varselect.thres]
+  interp_list[[i]] <- all_vars[vsurf_i$varselect.interp]
+  pred_list[[i]]   <- all_vars[vsurf_i$varselect.pred]
+
+  imp_vec <- setNames(rep(NA_real_, length(all_vars)), all_vars)
+  imp_vec[all_vars] <- vsurf_i$imp.mean.dec
+  imp_list[[i]] <- imp_vec
+
+  n_thres <- length(thres_list[[i]])
+  n_pred  <- length(pred_list[[i]])
+  cat(sprintf("thres=%d, pred=%d\n", n_thres, n_pred))
+}
+
+end_time   <- Sys.time()
+time_taken <- round(difftime(end_time, start_time, units = "mins"), 2)
+cat(sprintf("\n✓ VSURF completed in %.1f minutes\n", time_taken))
+if(length(failed_runs) > 0)
+  cat(sprintf("⚠️  Failed runs: %s\n", paste(failed_runs, collapse = ", ")))
+cat("\n")
+
+#------------------------------------------------------------------------------
+# MAJORITY VOTE
+#------------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("MAJORITY-VOTE RESULTS\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+count_selections <- function(sel_list, varnames) {
+  counts <- setNames(integer(length(varnames)), varnames)
+  for(s in sel_list)
+    counts[intersect(s, varnames)] <- counts[intersect(s, varnames)] + 1L
+  sort(counts, decreasing = TRUE)
+}
+
+thres_counts  <- count_selections(thres_list,  all_vars)
+interp_counts <- count_selections(interp_list, all_vars)
+pred_counts   <- count_selections(pred_list,   all_vars)
+
+majority_thres  <- names(thres_counts[ thres_counts  >= majority_threshold])
+majority_interp <- names(interp_counts[interp_counts >= majority_threshold])
+majority_pred   <- names(pred_counts[  pred_counts   >= majority_threshold_pred])
+
+# Average importance
+valid_imp <- imp_list[!sapply(imp_list, function(x) all(is.na(x)))]
+mean_imp  <- if(length(valid_imp) > 0) {
+  imp_mat <- do.call(rbind, valid_imp)
+  colMeans(imp_mat, na.rm = TRUE)
+} else setNames(rep(NA_real_, length(all_vars)), all_vars)
+
+importance_df <- data.frame(
+  Variable        = all_vars,
+  Domain          = get_family(all_vars),
+  Mean_Importance = mean_imp[all_vars],
+  Thres_Count     = as.integer(thres_counts[all_vars]),
+  Interp_Count    = as.integer(interp_counts[all_vars]),
+  Pred_Count      = as.integer(pred_counts[all_vars]),
+  Majority_Thres  = all_vars %in% majority_thres,
+  Majority_Interp = all_vars %in% majority_interp,
+  Majority_Pred   = all_vars %in% majority_pred,
+  stringsAsFactors = FALSE
+) %>% arrange(desc(Mean_Importance))
+
+cat("SELECTION COUNTS (out of", m, "runs) — sorted by mean importance:\n\n")
+print(importance_df %>%
+        select(Variable, Domain, Mean_Importance,
+               Thres_Count, Interp_Count, Pred_Count),
+      row.names = FALSE, digits = 4)
+cat("\n")
+
+# Report sets
+cat(sprintf("MAJORITY THRESHOLD SET  (≥%d/25): %d variables\n",
+            majority_threshold, length(majority_thres)))
+for(v in majority_thres)
+  cat(sprintf("  • %-35s (%d/25)  [%s]\n",
+              v, thres_counts[v], get_family(v)))
+cat("\n")
+
+cat(sprintf("MAJORITY INTERPRETATION SET (≥%d/25): %d variables\n",
+            majority_threshold, length(majority_interp)))
+for(v in majority_interp)
+  cat(sprintf("  • %-35s (%d/25)  [%s]\n",
+              v, interp_counts[v], get_family(v)))
+cat("\n")
+
+cat(sprintf("MAJORITY PREDICTION SET (≥%d/25): %d variables\n",
+            majority_threshold_pred, length(majority_pred)))
+cat("→ USE THESE FOR LOGISTIC REGRESSION\n")
+for(v in majority_pred)
+  cat(sprintf("  • %-35s (%d/25)  [%s]\n",
+              v, pred_counts[v], get_family(v)))
+cat("\n")
+
+# EPV check
+if(length(majority_pred) > 0) {
+  epv_pred <- round(n_events / length(majority_pred), 1)
+  cat(sprintf("EPV with prediction set: %d events / %d predictors = %.1f\n",
+              n_events, length(majority_pred), epv_pred))
+  if(epv_pred >= 10)
+    cat("✓ EPV ≥ 10 — adequate for logistic regression\n\n")
+  else if(epv_pred >= 5)
+    cat("~ EPV 5–9 — acceptable; interpret with caution\n\n")
+  else
+    cat("⚠️  EPV < 5 — consider raising the threshold before regression\n\n")
+} else {
+  cat("⚠️  No variables met the prediction threshold.\n")
+  cat("   Review pred_counts in the saved RDS.\n\n")
+}
+
+#------------------------------------------------------------------------------
+# DOMAIN BREAKDOWN OF PREDICTION SET
+#------------------------------------------------------------------------------
+
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("PREDICTION SET — BY DOMAIN\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
+
+domain_totals <- c(
+  Demographics  = length(demographics),
+  Clinical      = length(clinical),
+  Sleep_Adverse = length(sleep_adverse),
+  Behavioural   = length(behavioural),
+  Personality   = length(personality)
+)
+
+if(length(majority_pred) > 0) {
+  pred_domain_df <- data.frame(
+    Variable = majority_pred,
+    Domain   = get_family(majority_pred),
+    stringsAsFactors = FALSE
+  )
+
+  domain_summary <- pred_domain_df %>%
+    count(Domain, name = "N_Selected") %>%
+    mutate(N_Total = domain_totals[Domain],
+           Pct     = round(100 * N_Selected / N_Total, 1)) %>%
+    arrange(desc(N_Selected))
+
+  print(domain_summary, row.names = FALSE)
+  cat("\n")
+
+  cat("Prediction set variables by domain:\n\n")
+  for(dom in domain_summary$Domain) {
+    vars_in <- pred_domain_df$Variable[pred_domain_df$Domain == dom]
+    cat(sprintf("%s (%d):\n", dom, length(vars_in)))
+    for(v in vars_in)
+      cat(sprintf("  • %-35s (%d/25)\n", v, pred_counts[v]))
     cat("\n")
   }
+} else {
+  cat("⚠️  Prediction set is empty.\n\n")
+  domain_summary <- data.frame()
 }
 
-# ==============================================================================
-# VISUALIZATION
-# ==============================================================================
+#------------------------------------------------------------------------------
+# COMPARE WITH PERSONALITY-ONLY MODEL (11A)
+#------------------------------------------------------------------------------
 
-cat("Creating visualization...\n")
+cat("═══════════════════════════════════════════════════════════════\n")
+cat("COMPARISON WITH PERSONALITY-ONLY MODEL (CHUNK 11A)\n")
+cat("═══════════════════════════════════════════════════════════════\n\n")
 
-if(nrow(importance_df) > 0) {
-  plot_data <- importance_df %>%
-    head(20) %>%
-    mutate(
-      Category = case_when(
-        Variable %in% c("phq2_score", "osss_3_score", "gen_health", "med_quant") ~ "Basic Clinical",
-        grepl("^n_", Variable) ~ "Condition Counts",
-        Variable %in% c("alc_sleep", "can_sleep", "melatonin_use", "op_sleep") ~ "Sleep Aids",
-        grepl("^side_effects_", Variable) ~ "Side Effects",
-        grepl("^safety_", Variable) ~ "Safety",
-        grepl("^adls_", Variable) ~ "ADLs",
-        grepl("^dependence_", Variable) ~ "Dependence",
-        TRUE ~ "Other"
-      ),
-      Selected = Variable %in% selected_vars
-    )
-  
-  p <- ggplot(plot_data, aes(x = reorder(Variable, Importance), 
-                              y = Importance, fill = Category, alpha = Selected)) +
-    geom_col() +
-    scale_alpha_manual(values = c("TRUE" = 1.0, "FALSE" = 0.4),
-                       name = "VSURF Selected") +
-    coord_flip() +
-    scale_fill_brewer(palette = "Set2") +
-    labs(
-      title = "Variable Importance - Clinical Predictors",
-      subtitle = paste("VSURF selected", length(selected_vars), "of", ncol(X), "variables"),
-      x = NULL,
-      y = "Variable Importance (Mean Decrease Gini)"
-    ) +
-    theme_minimal(base_size = 12) +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
-      plot.subtitle = element_text(hjust = 0.5),
-      legend.position = "bottom"
-    )
-  
-  ggsave("VSURF_clinical_importance.png", p, width = 10, height = 10, dpi = 300)
-  cat("✓ Saved: VSURF_clinical_importance.png\n\n")
+if(file.exists("VSURF_personality_selected.rds")) {
+  pers_pred <- readRDS("VSURF_personality_selected.rds")
+
+  in_both   <- intersect(majority_pred, pers_pred)
+  only_full <- setdiff(majority_pred, pers_pred)
+  only_pers <- setdiff(pers_pred, majority_pred)
+
+  cat(sprintf("Personality model prediction set (11A): %d variables\n",
+              length(pers_pred)))
+  cat(sprintf("Full model prediction set (11B):        %d variables\n",
+              length(majority_pred)))
+  cat(sprintf("In both:                                %d variables\n",
+              length(in_both)))
+  cat(sprintf("Only in full model:                     %d variables\n",
+              length(only_full)))
+  cat(sprintf("Only in personality model:              %d variables\n\n",
+              length(only_pers)))
+
+  if(length(in_both) > 0) {
+    cat("Shared variables:\n")
+    for(v in in_both) cat(sprintf("  • %s\n", v))
+    cat("\n")
+  }
+  if(length(only_full) > 0) {
+    cat("Added by full model (non-personality predictors):\n")
+    for(v in only_full)
+      cat(sprintf("  • %-35s [%s]\n", v, get_family(v)))
+    cat("\n")
+  }
+  if(length(only_pers) > 0) {
+    cat("In personality model but dropped by full model:\n")
+    for(v in only_pers)
+      cat(sprintf("  • %-35s [%s]\n", v, get_family(v)))
+    cat("\n")
+  }
+} else {
+  cat("VSURF_personality_selected.rds not found — skipping comparison.\n\n")
 }
 
-# ==============================================================================
+#------------------------------------------------------------------------------
+# VISUALIZATIONS
+#------------------------------------------------------------------------------
+
+cat("Creating visualizations...\n")
+
+# Plot 1: Top 20 variables by mean importance, coloured by domain
+plot_top <- importance_df %>%
+  slice_head(n = 20) %>%
+  mutate(In_Pred = Majority_Pred)
+
+p1 <- ggplot(plot_top,
+             aes(x     = reorder(Variable, Mean_Importance),
+                 y     = Mean_Importance,
+                 fill  = Domain,
+                 alpha = In_Pred)) +
+  geom_col() +
+  geom_text(aes(label = sprintf("%d/25", Pred_Count)),
+            hjust = -0.1, size = 3.0) +
+  scale_alpha_manual(values = c("TRUE" = 1.0, "FALSE" = 0.35),
+                     labels = c("TRUE" = "In prediction set",
+                                "FALSE" = "Not selected"),
+                     name = NULL) +
+  scale_fill_brewer(palette = "Set1", name = "Domain") +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(
+    title    = "Variable Importance — Full Predictor Set (Top 20)",
+    subtitle = sprintf("VSURF majority vote across 25 imputations  |  prediction set: %d variables",
+                       length(majority_pred)),
+    x        = NULL,
+    y        = "Mean Variable Importance (averaged across imputations)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 13),
+    plot.subtitle   = element_text(hjust = 0.5, size = 10),
+    legend.position = "bottom"
+  )
+
+ggsave("VSURF_full_importance_top20.png", p1, width = 12, height = 9, dpi = 300)
+cat("✓ Saved: VSURF_full_importance_top20.png\n")
+
+# Plot 2: Stability heatmap — threshold set variables across all three VSURF steps
+# Only show variables that made it to at least the threshold set
+stab_vars <- importance_df %>%
+  filter(Majority_Thres | Thres_Count >= 5) %>%
+  arrange(Mean_Importance) %>%
+  pull(Variable)
+
+stability_data <- importance_df %>%
+  filter(Variable %in% stab_vars) %>%
+  select(Variable, Domain, Thres_Count, Interp_Count, Pred_Count) %>%
+  pivot_longer(cols      = c(Thres_Count, Interp_Count, Pred_Count),
+               names_to  = "Step",
+               values_to = "Count") %>%
+  mutate(
+    Step = factor(Step,
+                  levels = c("Thres_Count", "Interp_Count", "Pred_Count"),
+                  labels = c("Threshold", "Interpretation", "Prediction")),
+    Variable = factor(Variable, levels = stab_vars)
+  )
+
+p2 <- ggplot(stability_data, aes(x = Step, y = Variable, fill = Count)) +
+  geom_tile(colour = "white", linewidth = 0.4) +
+  geom_text(aes(label = Count), size = 2.8, colour = "white", fontface = "bold") +
+  facet_grid(Domain ~ ., scales = "free_y", space = "free_y") +
+  scale_fill_gradient(low = "#d9edf7", high = "#1a5276",
+                      limits = c(0, m), name = "Times\nselected") +
+  labs(
+    title    = "VSURF Selection Stability — Full Model",
+    subtitle = sprintf("Majority threshold: ≥%d/25 (threshold/interp), ≥%d/25 (prediction)",
+                       majority_threshold, majority_threshold_pred),
+    x        = "VSURF Step",
+    y        = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle   = element_text(hjust = 0.5, size = 9),
+    strip.text.y    = element_text(angle = 0, face = "bold", size = 9),
+    axis.text.y     = element_text(size = 8),
+    panel.spacing.y = unit(0.3, "lines")
+  )
+
+ggsave("VSURF_full_stability.png", p2,
+       width  = 9,
+       height = max(8, length(stab_vars) * 0.35 + 3),
+       dpi    = 300)
+cat("✓ Saved: VSURF_full_stability.png\n\n")
+
+#------------------------------------------------------------------------------
 # SAVE RESULTS
-# ==============================================================================
+#------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("SAVING RESULTS\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-vsurf_output <- list(
-  vsurf_object = vsurf_result,
-  selected_vars = selected_vars,
-  vsurf_threshold = vsurf_threshold,
-  vsurf_interpretation = vsurf_interpretation,
-  vsurf_prediction = vsurf_prediction,
-  importance_df = importance_df,
-  category_summary = if(exists("category_summary")) category_summary else data.frame(),
+vsurf_full_output <- list(
+
+  # FINAL SELECTIONS (majority vote)
+  majority_pred    = majority_pred,       # ← USE FOR REGRESSION
+  majority_interp  = majority_interp,
+  majority_thres   = majority_thres,
+
+  # Per-imputation raw selections
+  pred_list        = pred_list,
+  interp_list      = interp_list,
+  thres_list       = thres_list,
+
+  # Selection counts and importance
+  importance_df    = importance_df,
+  pred_counts      = pred_counts,
+  interp_counts    = interp_counts,
+  thres_counts     = thres_counts,
+
+  # Domain summary
+  domain_summary   = domain_summary,
+
+  # Metadata
   metadata = list(
-    outcome = outcome_var,
-    n_obs = nrow(X),
-    n_input = ncol(X),
-    n_selected = length(selected_vars),
-    time_minutes = time_taken
+    input_vars              = all_vars,
+    outcome                 = outcome_var,
+    m                       = m,
+    N                       = N,
+    n_events                = n_events,
+    majority_threshold      = majority_threshold,
+    majority_threshold_pred = majority_threshold_pred,
+    n_pred_selected         = length(majority_pred),
+    n_interp_selected       = length(majority_interp),
+    n_thres_selected        = length(majority_thres),
+    failed_runs             = failed_runs,
+    time_minutes            = as.numeric(time_taken),
+    seed_base               = 12345,
+    withdrawal_included     = TRUE,
+    DBAS_Total_excluded     = TRUE
   )
 )
 
-saveRDS(vsurf_output, "VSURF_clinical_results.rds")
-saveRDS(selected_vars, "VSURF_clinical_selected.rds")
+saveRDS(vsurf_full_output,  "VSURF_full_results.rds")
+saveRDS(majority_pred,      "VSURF_full_selected.rds")
+write.csv(importance_df,    "VSURF_full_importance_table.csv", row.names = FALSE)
 
-cat("✓ Saved: VSURF_clinical_results.rds\n")
-cat("✓ Saved: VSURF_clinical_selected.rds\n\n")
+cat("✓ Saved: VSURF_full_results.rds\n")
+cat("✓ Saved: VSURF_full_selected.rds\n")
+cat("✓ Saved: VSURF_full_importance_table.csv\n\n")
 
-# ==============================================================================
+#------------------------------------------------------------------------------
 # SUMMARY
-# ==============================================================================
+#------------------------------------------------------------------------------
 
 cat("═══════════════════════════════════════════════════════════════\n")
 cat("CHUNK 11B COMPLETE\n")
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
-cat("FINAL SELECTION:\n")
-cat("  Variables selected:", length(selected_vars), "\n")
-cat("  Sample size:", nrow(X), "\n")
-cat("  Events per variable:", round(outcome_table[2] / length(selected_vars), 1), "\n\n")
+cat(sprintf("VSURF ran on %d imputations (%d failed)\n",
+            m, length(failed_runs)))
+cat(sprintf("Majority threshold: ≥%d/25 (threshold/interp), ≥%d/25 (prediction)\n\n",
+            majority_threshold, majority_threshold_pred))
 
-cat("SELECTED CLINICAL VARIABLES:\n")
-for(i in seq_along(selected_vars)) {
-  cat("  ", i, ". ", selected_vars[i], "\n", sep = "")
-}
-cat("\n")
+cat("FINAL SELECTIONS:\n")
+cat(sprintf("  Threshold set:      %d variables\n", length(majority_thres)))
+cat(sprintf("  Interpretation set: %d variables\n", length(majority_interp)))
+cat(sprintf("  Prediction set:     %d variables  ← FOR REGRESSION\n\n",
+            length(majority_pred)))
 
-cat("✓ Ready for logistic regression modeling\n\n")
-```
-
-
-
-## BEHA VSURF
-```{r}
-#==============================================================================
-# CHUNK 11C: VSURF VARIABLE SELECTION (BEHAVIOURAL PREDICTORS)
-#==============================================================================
-# Purpose: Select important behavioural variables (COM-B framework)
-# Strategy: Apply VSURF to behavioural/motivation block
-# Rationale: Identify key COM-B factors predicting BZRA discontinuation
-# Output: Reduced set of behavioural predictors for logistic regression
-#==============================================================================
-
-library(VSURF)
-library(tidyverse)
-library(mice)
-library(randomForest)
-library(ggplot2)
-
-cat("\n")
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("CHUNK 11C: VSURF VARIABLE SELECTION (BEHAVIOURAL/COM-B)\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-# Load imputed data
-if(!file.exists("imputed_data_with_subscales.rds")) {
-  stop("ERROR: Run Chunk 9 first")
+if(length(majority_pred) > 0) {
+  cat("PREDICTION SET:\n")
+  for(i in seq_along(majority_pred))
+    cat(sprintf("  %2d. %-35s (%d/25)  [%s]\n",
+                i, majority_pred[i], pred_counts[majority_pred[i]],
+                get_family(majority_pred[i])))
+  cat(sprintf("\n  EPV: %d / %d = %.1f\n",
+              n_events, length(majority_pred),
+              n_events / length(majority_pred)))
 }
 
-mids_data <- readRDS("imputed_data_with_subscales.rds")
-cat("✓ Loaded imputed data with", mids_data$m, "imputations\n\n")
-
-# Get outcome variable
-outcome_var <- "scrn_stopped_bzra"
-
-# ==============================================================================
-# DEFINE BEHAVIOURAL VARIABLES
-# ==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("DEFINING BEHAVIOURAL VARIABLES (COM-B)\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-# COM-B Framework variables
-behavioural_vars <- c(
-  # Motivation
-  paste0("motivation_", 1:3),
-  
-  # Desires (automatic motivation)
-  paste0("desires_", 1:3),
-  
-  # Capability (psychological + physical)
-  "capability_1", "capability"
-)
-
-cat("BEHAVIOURAL VARIABLES (", length(behavioural_vars), "):\n\n", sep = "")
-cat("  Motivation (3): motivation_1, motivation_2, motivation_3\n")
-cat("  Desires (3): desires_1, desires_2, desires_3\n")
-cat("  Capability (2): capability_1, capability\n\n")
-
-cat("COM-B FRAMEWORK:\n")
-cat("  • Capability - Psychological/physical ability to discontinue\n")
-cat("  • Motivation - Reflective processes (goals, plans)\n")
-cat("  • Desires - Automatic processes (habits, emotions)\n\n")
-
-# ==============================================================================
-# PREPARE DATA
-# ==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("PREPARING DATA\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-# Extract first imputation
-data_complete <- complete(mids_data, 1)
-
-# Check variable availability
-available_vars <- behavioural_vars[behavioural_vars %in% names(data_complete)]
-missing_vars <- behavioural_vars[!behavioural_vars %in% names(data_complete)]
-
-if(length(missing_vars) > 0) {
-  cat("⚠️  WARNING: Missing variables:\n")
-  for(var in missing_vars) cat("    •", var, "\n")
-  cat("\n")
-}
-
-cat("Available behavioural variables:", length(available_vars), "of", length(behavioural_vars), "\n\n")
-
-# Prepare predictor matrix
-X <- data_complete %>%
-  select(all_of(available_vars)) %>%
-  select(where(~ !all(is.na(.))))
-
-# Prepare outcome
-if(!outcome_var %in% names(data_complete)) {
-  stop("ERROR: Outcome variable '", outcome_var, "' not found!")
-}
-
-y <- data_complete[[outcome_var]]
-
-# Remove missing outcomes
-complete_idx <- !is.na(y)
-X <- X[complete_idx, ]
-y <- y[complete_idx]
-y <- factor(y, levels = c(0, 1), labels = c("Continued", "Discontinued"))
-y <- droplevels(y)
-
-cat("Data for VSURF:\n")
-cat("  Observations:", nrow(X), "\n")
-cat("  Predictors:", ncol(X), "\n")
-cat("  Outcome:", outcome_var, "\n\n")
-
-cat("Outcome distribution:\n")
-outcome_table <- table(y)
-print(outcome_table)
-cat("\n  Discontinuation rate:", round(100 * outcome_table[2] / sum(outcome_table), 1), "%\n")
-cat("  Events per variable:", round(outcome_table[2] / ncol(X), 1), "\n\n")
-
-# ==============================================================================
-# RUN VSURF
-# ==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("RUNNING VSURF\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-cat("VSURF Algorithm:\n")
-cat("  1. THRESHOLDING - Remove irrelevant variables\n")
-cat("  2. INTERPRETATION - Variables for explanatory models\n")
-cat("  3. PREDICTION - Minimal set for pure prediction\n\n")
-
-cat("NOTE: Small variable set (n=", ncol(X), ") - VSURF may select most/all\n\n", sep = "")
-
-cat("Running VSURF...\n\n")
-
-set.seed(12345)
-start_time <- Sys.time()
-
-vsurf_result <- tryCatch({
-  VSURF(
-    x = X,
-    y = y,
-    ntree = 2000,
-    mtry = max(floor(ncol(X)/3), 1),
-    parallel = FALSE,
-    verbose = TRUE
-  )
-}, error = function(e) {
-  cat("\n✗ ERROR:", e$message, "\n")
-  return(NULL)
-})
-
-end_time <- Sys.time()
-time_taken <- round(difftime(end_time, start_time, units = "mins"), 2)
-
-cat("\n✓ VSURF completed in", time_taken, "minutes\n\n")
-
-# ==============================================================================
-# EXTRACT RESULTS
-# ==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("VSURF RESULTS\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-if(is.null(vsurf_result)) {
-  # Fallback: Standard RF importance
-  cat("⚠️  VSURF failed - using fallback (RF importance)\n\n")
-  
-  set.seed(12345)
-  rf_model <- randomForest(x = X, y = y, importance = TRUE, ntree = 2000)
-  
-  importance_vals <- importance(rf_model)[, "MeanDecreaseGini"]
-  importance_df <- data.frame(
-    Variable = names(importance_vals),
-    Importance = importance_vals
-  ) %>% arrange(desc(Importance))
-  
-  # Select top 5 (conservative for 8 variables)
-  selected_vars <- importance_df$Variable[1:min(5, nrow(importance_df))]
-  
-  vsurf_threshold <- selected_vars
-  vsurf_interpretation <- selected_vars
-  vsurf_prediction <- selected_vars[1:min(3, length(selected_vars))]
-  
-} else {
-  # Extract VSURF results
-  vsurf_threshold <- names(X)[vsurf_result$varselect.thres]
-  vsurf_interpretation <- names(X)[vsurf_result$varselect.interp]
-  vsurf_prediction <- names(X)[vsurf_result$varselect.pred]
-  
-  # Get importance
-  if(length(vsurf_threshold) > 0) {
-    importance_df <- data.frame(
-      Variable = vsurf_threshold,
-      Importance = vsurf_result$imp.varselect.thres
-    ) %>% arrange(desc(Importance))
-  } else {
-    set.seed(12345)
-    rf_model <- randomForest(x = X, y = y, importance = TRUE, ntree = 2000)
-    importance_vals <- importance(rf_model)[, "MeanDecreaseGini"]
-    importance_df <- data.frame(
-      Variable = names(importance_vals),
-      Importance = importance_vals
-    ) %>% arrange(desc(Importance))
-  }
-  
-  selected_vars <- vsurf_interpretation
-}
-
-# Display results
-cat("STEP 1 - THRESHOLDING:", length(vsurf_threshold), "variables\n")
-if(length(vsurf_threshold) > 0) {
-  for(i in seq_along(vsurf_threshold)) {
-    cat("  ", i, ". ", vsurf_threshold[i], "\n", sep = "")
-  }
-}
-cat("\n")
-
-cat("STEP 2 - INTERPRETATION:", length(vsurf_interpretation), "variables\n")
-cat("→ USE THESE FOR EXPLANATORY MODEL\n")
-if(length(vsurf_interpretation) > 0) {
-  for(i in seq_along(vsurf_interpretation)) {
-    cat("  ", i, ". ", vsurf_interpretation[i], "\n", sep = "")
-  }
-}
-cat("\n")
-
-cat("STEP 3 - PREDICTION:", length(vsurf_prediction), "variables\n")
-if(length(vsurf_prediction) > 0) {
-  for(i in seq_along(vsurf_prediction)) {
-    cat("  ", i, ". ", vsurf_prediction[i], "\n", sep = "")
-  }
-}
-cat("\n")
-
-# Variable importance
-cat("VARIABLE IMPORTANCE (All):\n")
-print(importance_df, row.names = FALSE)
-cat("\n")
-
-# ==============================================================================
-# COM-B BREAKDOWN
-# ==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("SELECTION BY COM-B COMPONENT\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-if(length(selected_vars) > 0) {
-  comb_breakdown <- data.frame(
-    Variable = selected_vars,
-    Component = case_when(
-      grepl("^motivation_", selected_vars) ~ "Motivation",
-      grepl("^desires_", selected_vars) ~ "Desires",
-      grepl("^capability", selected_vars) ~ "Capability",
-      TRUE ~ "Other"
-    )
-  ) %>% arrange(Component, Variable)
-  
-  comb_summary <- comb_breakdown %>%
-    count(Component, name = "N_Selected") %>%
-    mutate(
-      N_Total = case_when(
-        Component == "Motivation" ~ 3,
-        Component == "Desires" ~ 3,
-        Component == "Capability" ~ 2,
-        TRUE ~ 0
-      ),
-      Percent = round(100 * N_Selected / N_Total, 1)
-    )
-  
-  print(comb_summary, row.names = FALSE)
-  cat("\n")
-  
-  for(component in unique(comb_breakdown$Component)) {
-    vars_in_comp <- comb_breakdown %>% filter(Component == component)
-    cat(component, "(", nrow(vars_in_comp), "):\n", sep = "")
-    for(i in 1:nrow(vars_in_comp)) {
-      cat("  •", vars_in_comp$Variable[i], "\n")
-    }
-    cat("\n")
-  }
-}
-
-# ==============================================================================
-# VISUALIZATION
-# ==============================================================================
-
-cat("Creating visualization...\n")
-
-if(nrow(importance_df) > 0) {
-  plot_data <- importance_df %>%
-    mutate(
-      Component = case_when(
-        grepl("^motivation_", Variable) ~ "Motivation",
-        grepl("^desires_", Variable) ~ "Desires",
-        grepl("^capability", Variable) ~ "Capability",
-        TRUE ~ "Other"
-      ),
-      Selected = Variable %in% selected_vars
-    )
-  
-  p <- ggplot(plot_data, aes(x = reorder(Variable, Importance), 
-                              y = Importance, fill = Component, alpha = Selected)) +
-    geom_col() +
-    scale_alpha_manual(values = c("TRUE" = 1.0, "FALSE" = 0.4),
-                       name = "VSURF Selected") +
-    coord_flip() +
-    scale_fill_brewer(palette = "Set2") +
-    labs(
-      title = "Variable Importance - Behavioural Predictors (COM-B)",
-      subtitle = paste("VSURF selected", length(selected_vars), "of", ncol(X), "variables"),
-      x = NULL,
-      y = "Variable Importance (Mean Decrease Gini)"
-    ) +
-    theme_minimal(base_size = 12) +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
-      plot.subtitle = element_text(hjust = 0.5),
-      legend.position = "bottom"
-    )
-  
-  ggsave("VSURF_behavioural_importance.png", p, width = 10, height = 6, dpi = 300)
-  cat("✓ Saved: VSURF_behavioural_importance.png\n\n")
-}
-
-# ==============================================================================
-# SAVE RESULTS
-# ==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("SAVING RESULTS\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-vsurf_output <- list(
-  vsurf_object = vsurf_result,
-  selected_vars = selected_vars,
-  vsurf_threshold = vsurf_threshold,
-  vsurf_interpretation = vsurf_interpretation,
-  vsurf_prediction = vsurf_prediction,
-  importance_df = importance_df,
-  comb_summary = if(exists("comb_summary")) comb_summary else data.frame(),
-  metadata = list(
-    outcome = outcome_var,
-    n_obs = nrow(X),
-    n_input = ncol(X),
-    n_selected = length(selected_vars),
-    time_minutes = time_taken
-  )
-)
-
-saveRDS(vsurf_output, "VSURF_behavioural_results.rds")
-saveRDS(selected_vars, "VSURF_behavioural_selected.rds")
-
-cat("✓ Saved: VSURF_behavioural_results.rds\n")
-cat("✓ Saved: VSURF_behavioural_selected.rds\n\n")
-
-# ==============================================================================
-# SUMMARY
-# ==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("CHUNK 11C COMPLETE\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-cat("FINAL SELECTION:\n")
-cat("  Variables selected:", length(selected_vars), "\n")
-cat("  Sample size:", nrow(X), "\n")
-cat("  Events per variable:", round(outcome_table[2] / length(selected_vars), 1), "\n\n")
-
-cat("SELECTED BEHAVIOURAL VARIABLES:\n")
-for(i in seq_along(selected_vars)) {
-  cat("  ", i, ". ", selected_vars[i], "\n", sep = "")
-}
-cat("\n")
-
-cat("✓ Ready for logistic regression modeling\n\n")
-```
-
-
-
-## DEM VSURF
-```{r}
-#==============================================================================
-# VSURF ANALYSIS: DEMOGRAPHICS
-#==============================================================================
-# Purpose: Identify which demographic variables are essential confounders
-# Rationale: Reduce predictor count to improve EPV
-# Strategy: Let VSURF decide which demographics truly predict outcome
-#==============================================================================
-
-library(tidyverse)
-library(VSURF)
-library(mice)
-library(randomForest)
-library(ggplot2)
-
-cat("\n")
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("VSURF ANALYSIS: DEMOGRAPHIC VARIABLES\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-#==============================================================================
-# PART A: LOAD DATA
-#==============================================================================
-
-# Load imputed data
-if(!file.exists("imputed_data_with_subscales.rds")) {
-  stop("ERROR: Run Chunk 9 first")
-}
-
-mids_data <- readRDS("imputed_data_with_subscales.rds")
-cat("✓ Loaded imputed data with", mids_data$m, "imputations\n\n")
-
-# Get outcome variable
-outcome_var <- "scrn_stopped_bzra"
-
-#==============================================================================
-# PART B: DEFINE DEMOGRAPHIC VARIABLES
-#==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("DEFINING DEMOGRAPHIC VARIABLES\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-# Define all available demographics
-demographics_all <- c("age", "sex", "education", "income", "employment", "driving_freq")
-
-cat("DEMOGRAPHIC VARIABLES (", length(demographics_all), "):\n\n", sep = "")
-cat("  Continuous (1): age\n")
-cat("  Categorical (5): sex, education, income, employment, driving_freq\n\n")
-
-#==============================================================================
-# PART C: PREPARE DATA
-#==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("PREPARING DATA\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-# Extract first imputation (consistent with personality chunk)
-data_complete <- complete(mids_data, 1)
-
-# Check variable availability
-available_vars <- demographics_all[demographics_all %in% names(data_complete)]
-missing_vars   <- demographics_all[!demographics_all %in% names(data_complete)]
-
-if(length(missing_vars) > 0) {
-  cat("⚠️  WARNING: Missing variables:\n")
-  for(var in missing_vars) cat("    •", var, "\n")
-  cat("\n")
-}
-
-cat("Available demographic variables:", length(available_vars), "of", length(demographics_all), "\n\n")
-
-# Prepare predictor matrix
-X <- data_complete %>%
-  select(all_of(available_vars)) %>%
-  select(where(~ !all(is.na(.))))
-
-cat("Variable types:\n")
-for(var in names(X)) {
-  cat(sprintf("  %s: %s\n", var, class(X[[var]])))
-}
-cat("\n")
-
-# Prepare outcome
-if(!outcome_var %in% names(data_complete)) {
-  stop("ERROR: Outcome variable '", outcome_var, "' not found!")
-}
-
-y <- data_complete[[outcome_var]]
-
-# Remove missing outcomes
-complete_idx <- !is.na(y)
-X <- X[complete_idx, ]
-y <- y[complete_idx]
-y <- factor(y, levels = c(0, 1), labels = c("Continued", "Discontinued"))
-y <- droplevels(y)
-
-cat("Data for VSURF:\n")
-cat("  Observations:", nrow(X), "\n")
-cat("  Predictors:", ncol(X), "\n")
-cat("  Outcome:", outcome_var, "\n\n")
-
-cat("Outcome distribution:\n")
-outcome_table <- table(y)
-print(outcome_table)
-cat("\n  Discontinuation rate:", round(100 * outcome_table[2] / sum(outcome_table), 1), "%\n")
-cat("  Events per variable:", round(outcome_table[2] / ncol(X), 1), "\n\n")
-
-#==============================================================================
-# PART D: RUN VSURF
-#==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("RUNNING VSURF\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-cat("VSURF Algorithm:\n")
-cat("  1. THRESHOLDING - Remove irrelevant variables\n")
-cat("  2. INTERPRETATION - Variables for explanatory models\n")
-cat("  3. PREDICTION - Minimal set for pure prediction\n\n")
-
-cat("VSURF settings:\n")
-cat("  Variables:", ncol(X), "demographics\n")
-cat("  Trees: 2000\n")
-cat("  mtry:", max(floor(ncol(X)/3), 1), "\n\n")
-
-cat("Running VSURF (this may take 1-2 minutes)...\n\n")
-
-set.seed(123)
-start_time <- Sys.time()
-
-vsurf_result <- tryCatch({
-  VSURF(
-    x = X,
-    y = y,
-    ntree = 2000,
-    mtry = max(floor(ncol(X)/3), 1),
-    parallel = FALSE,
-    verbose = TRUE
-  )
-}, error = function(e) {
-  cat("\n✗ ERROR:", e$message, "\n")
-  return(NULL)
-})
-
-end_time   <- Sys.time()
-time_taken <- round(difftime(end_time, start_time, units = "mins"), 2)
-
-cat("\n✓ VSURF completed in", time_taken, "minutes\n\n")
-
-#==============================================================================
-# PART E: EXTRACT RESULTS
-#==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("VSURF RESULTS\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-if(is.null(vsurf_result)) {
-  # Fallback: Standard RF importance
-  cat("⚠️  VSURF failed - using fallback (RF importance)\n\n")
-
-  set.seed(123)
-  rf_model <- randomForest(x = X, y = y, importance = TRUE, ntree = 2000)
-
-  importance_vals <- importance(rf_model)[, "MeanDecreaseGini"]
-  importance_df <- data.frame(
-    Variable   = names(importance_vals),
-    Importance = importance_vals
-  ) %>% arrange(desc(Importance))
-
-  # Select top variables (cap at half of input)
-  n_select       <- min(ceiling(ncol(X) / 2), nrow(importance_df))
-  selected_vars  <- importance_df$Variable[1:n_select]
-
-  vsurf_threshold    <- selected_vars
-  vsurf_interpretation <- selected_vars
-  vsurf_prediction   <- selected_vars[1:min(3, length(selected_vars))]
-
-} else {
-  # Extract VSURF results
-  vsurf_threshold      <- names(X)[vsurf_result$varselect.thres]
-  vsurf_interpretation <- names(X)[vsurf_result$varselect.interp]
-  vsurf_prediction     <- names(X)[vsurf_result$varselect.pred]
-
-  # Get importance
-  if(length(vsurf_threshold) > 0) {
-    importance_df <- data.frame(
-      Variable   = vsurf_threshold,
-      Importance = vsurf_result$imp.varselect.thres
-    ) %>% arrange(desc(Importance))
-  } else {
-    set.seed(123)
-    rf_model <- randomForest(x = X, y = y, importance = TRUE, ntree = 2000)
-    importance_vals <- importance(rf_model)[, "MeanDecreaseGini"]
-    importance_df <- data.frame(
-      Variable   = names(importance_vals),
-      Importance = importance_vals
-    ) %>% arrange(desc(Importance))
-  }
-
-  selected_vars <- vsurf_interpretation
-}
-
-# Display results
-cat("STEP 1 - THRESHOLDING:", length(vsurf_threshold), "variables\n")
-if(length(vsurf_threshold) > 0) {
-  for(i in seq_along(vsurf_threshold)) cat("  ", i, ". ", vsurf_threshold[i], "\n", sep = "")
-}
-cat("\n")
-
-cat("STEP 2 - INTERPRETATION:", length(vsurf_interpretation), "variables\n")
-cat("→ USE THESE FOR EXPLANATORY MODEL\n")
-if(length(vsurf_interpretation) > 0) {
-  for(i in seq_along(vsurf_interpretation)) cat("  ", i, ". ", vsurf_interpretation[i], "\n", sep = "")
-}
-cat("\n")
-
-cat("STEP 3 - PREDICTION:", length(vsurf_prediction), "variables\n")
-if(length(vsurf_prediction) > 0) {
-  for(i in seq_along(vsurf_prediction)) cat("  ", i, ". ", vsurf_prediction[i], "\n", sep = "")
-}
-cat("\n")
-
-cat("VARIABLE IMPORTANCE:\n")
-print(importance_df, row.names = FALSE)
-cat("\n")
-
-#==============================================================================
-# PART F: RECOMMENDATION
-#==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART F: RECOMMENDATIONS\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-if(length(selected_vars) == 0) {
-  recommendation <- "MINIMAL ADJUSTMENT"
-  selected_vars  <- c("age", "sex")  # Default epidemiological confounders
-  rationale <- "VSURF found no demographics strongly predictive. Including age and sex\nas standard epidemiological confounders."
-} else if(length(selected_vars) <= 2) {
-  recommendation <- "PARSIMONIOUS ADJUSTMENT"
-  rationale <- sprintf("VSURF selected %d demographic(s). Use these for confounder adjustment.",
-                       length(selected_vars))
-} else {
-  recommendation <- "MODERATE ADJUSTMENT"
-  rationale <- sprintf("VSURF selected %d demographics. This maintains balance between\nconfounding control and EPV preservation.",
-                       length(selected_vars))
-}
-
-cat("RECOMMENDED APPROACH:", recommendation, "\n")
-cat("─────────────────────────────────────────────────────────────\n\n")
-
-cat("Demographics to include in regression models:\n")
-for(v in selected_vars) cat(sprintf("  • %s\n", v))
-cat("\n")
-
-cat("Rationale:\n")
-cat(rationale, "\n\n")
-
-# EPV calculation
-n_events <- sum(y == "Discontinued")
-cat("EPV CALCULATION:\n")
-cat("─────────────────────────────────────────────────────────────\n")
-cat(sprintf("Events: %d\n", n_events))
-cat(sprintf("VSURF demographics selected: %d\n", length(selected_vars)))
-
-# Load personality VSURF results if available
-if(file.exists("VSURF_personality_results.rds")) {
-  vsurf_pers <- readRDS("VSURF_personality_results.rds")
-  n_pers     <- length(vsurf_pers$selected_vars)
-  cat(sprintf("VSURF personality selected: %d\n\n", n_pers))
-
-  cat("Model configurations:\n")
-  cat(sprintf("  Personality only:           %d predictors, EPV = %.1f\n",
-              n_pers, n_events / n_pers))
-  cat(sprintf("  Personality + Demographics: %d predictors, EPV = %.1f\n",
-              n_pers + length(selected_vars),
-              n_events / (n_pers + length(selected_vars))))
-  cat(sprintf("  Minimal (E+M+demo):         %d predictors, EPV = %.1f\n",
-              2 + length(selected_vars),
-              n_events / (2 + length(selected_vars))))
-} else {
-  cat("  (VSURF_personality_results.rds not found - skipping EPV model comparison)\n")
-}
-cat("\n")
-
-#==============================================================================
-# PART G: VISUALIZATION
-#==============================================================================
-
-cat("Creating visualization...\n")
-
-if(nrow(importance_df) > 0) {
-  plot_data <- importance_df %>%
-    mutate(Selected = Variable %in% selected_vars)
-
-  p <- ggplot(plot_data, aes(x = reorder(Variable, Importance),
-                              y = Importance,
-                              fill = Selected)) +
-    geom_col() +
-    scale_fill_manual(values = c("TRUE" = "#4DAF4A", "FALSE" = "#BDBDBD"),
-                      name = "VSURF Selected") +
-    coord_flip() +
-    labs(
-      title    = "Variable Importance - Demographic Predictors",
-      subtitle = paste("VSURF selected", length(selected_vars), "of", ncol(X), "variables"),
-      x        = NULL,
-      y        = "Variable Importance (Mean Decrease Gini)"
-    ) +
-    theme_minimal(base_size = 12) +
-    theme(
-      plot.title    = element_text(hjust = 0.5, face = "bold", size = 14),
-      plot.subtitle = element_text(hjust = 0.5),
-      legend.position = "bottom"
-    )
-
-  ggsave("VSURF_demographics_importance.png", p, width = 8, height = 6, dpi = 300)
-  cat("✓ Saved: VSURF_demographics_importance.png\n\n")
-}
-
-#==============================================================================
-# PART H: SAVE RESULTS
-#==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("PART H: SAVING RESULTS\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-vsurf_output <- list(
-  vsurf_object         = vsurf_result,
-  selected_vars        = selected_vars,
-  vsurf_threshold      = vsurf_threshold,
-  vsurf_interpretation = vsurf_interpretation,
-  vsurf_prediction     = vsurf_prediction,
-  importance_df        = importance_df,
-  metadata = list(
-    outcome      = outcome_var,
-    n_obs        = nrow(X),
-    n_input      = ncol(X),
-    n_selected   = length(selected_vars),
-    time_minutes = time_taken
-  )
-)
-
-saveRDS(vsurf_output, "VSURF_demographics_results.rds")
-saveRDS(selected_vars, "VSURF_demographics_selected.rds")
-
-cat("✓ Saved: VSURF_demographics_results.rds\n")
-cat("✓ Saved: VSURF_demographics_selected.rds\n\n")
-
-# Eliminated variables
-vars_eliminated <- setdiff(names(X), selected_vars)
-
-# Summary report
-report <- c(
-  "═══════════════════════════════════════════════════════════════",
-  "VSURF DEMOGRAPHICS - SUMMARY REPORT",
-  "═══════════════════════════════════════════════════════════════",
-  "",
-  sprintf("Total demographics tested: %d", ncol(X)),
-  sprintf("Variables selected (interpretation): %d", length(selected_vars)),
-  sprintf("Variables eliminated: %d", length(vars_eliminated)),
-  "",
-  "SELECTED DEMOGRAPHICS:",
-  paste("  •", selected_vars, collapse = "\n"),
-  "",
-  "ELIMINATED DEMOGRAPHICS:",
-  if(length(vars_eliminated) > 0) paste("  •", vars_eliminated, collapse = "\n") else "  (None)",
-  "",
-  "RECOMMENDATION:",
-  paste(" ", recommendation),
-  "",
-  rationale,
-  "",
-  "NEXT STEPS:",
-  "  1. Use selected demographics in regression models",
-  "  2. This improves EPV while controlling key confounders",
-  "",
-  "═══════════════════════════════════════════════════════════════"
-)
-
-writeLines(report, "VSURF_demographics_report.txt")
-cat("✓ Saved: VSURF_demographics_report.txt\n\n")
-
-#==============================================================================
-# SUMMARY
-#==============================================================================
-
-cat("═══════════════════════════════════════════════════════════════\n")
-cat("VSURF DEMOGRAPHICS COMPLETE\n")
-cat("═══════════════════════════════════════════════════════════════\n\n")
-
-cat("FINAL SELECTION:\n")
-cat("  Variables selected:", length(selected_vars), "\n")
-cat("  Sample size:", nrow(X), "\n")
-cat("  Events per variable:", round(outcome_table[2] / length(selected_vars), 1), "\n\n")
-
-cat("SELECTED DEMOGRAPHIC VARIABLES:\n")
-for(i in seq_along(selected_vars)) {
-  cat("  ", i, ". ", selected_vars[i], "\n", sep = "")
-}
-cat("\n")
-
-for(line in report) cat(line, "\n")
-
-cat("\n✓ Proceed to revised regression models using selected demographics\n\n")
+cat("\n✓ Ready for Chunk 12B: logistic regression (full model)\n")
+cat("✓ Ready for Chunk 12C: DeLong's test (model comparison)\n\n")
 ```
 
 

@@ -1,0 +1,3 @@
+term,OR_full,OR_CI_full,p_full,OR_clean,OR_CI_clean,p_clean,separation_flag,m_converged,OR_change_pct,Sig_full,Sig_clean,Robustness
+wdl_symptom_count,0.26696848390250527,"0.27 [0.16, 0.44]",2.6957758018192406e-7,NA,NA,NA,TRUE,0,NA,TRUE,NA,Separation in reduced sample — robust
+indication,0.5889237420723662,"0.59 [0.47, 0.74]",1.252393884824511e-5,0.3562031321510479,"0.36 [0.23, 0.55]",2.69358773782956e-6,FALSE,25,-39.5,TRUE,TRUE,Robust (remains significant)
