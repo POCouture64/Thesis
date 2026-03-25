@@ -1,6 +1,6 @@
 "variable","type","n","mean_sd","effect_size","es_measure","has_pair"
 "osss_3_score","numeric",397,"10.21 (2.28)",NA,NA,FALSE
-"gen_health","numeric",397,"1.00 (0.00)",NA,NA,FALSE
+"gen_health","numeric",397,"3.26 (1.00)",NA,NA,FALSE
 "sleep_health_con","numeric",397,"1.43 (0.68)",NA,NA,FALSE
 "def_insomnia","numeric",397,"2.02 (0.87)",NA,NA,FALSE
 "phys_health_con","numeric",397,"3.39 (2.35)",NA,NA,FALSE
