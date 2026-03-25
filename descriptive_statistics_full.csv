@@ -1,0 +1,201 @@
+"variable","type","n","mean","sd","summary","effect_size","es_measure","has_pair"
+"osss_3_score","numeric",397,10.212,2.282,"Mean = 10.212, SD = 2.282",NA,NA,FALSE
+"gen_health","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,FALSE
+"sleep_health_con","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,FALSE
+"def_insomnia","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,FALSE
+"phys_health_con","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,FALSE
+"ment_health_con","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,FALSE
+"phq2_score","numeric",397,1.36,1.571,"Mean = 1.360, SD = 1.571",NA,NA,FALSE
+"mobil_aid","numeric",397,0.207,0.539,"Mean = 0.207, SD = 0.539",NA,NA,FALSE
+"fall","numeric",397,0.466,0.679,"Mean = 0.466, SD = 0.679",NA,NA,FALSE
+"fall2","numeric",151,1.98,0.678,"Mean = 1.980, SD = 0.678",NA,NA,FALSE
+"med_quant","numeric",397,6.421,3.948,"Mean = 6.421, SD = 3.948",NA,NA,FALSE
+"med_burden_1","numeric",397,2.572,1.105,"Mean = 2.572, SD = 1.105",NA,NA,FALSE
+"med_burden2","numeric",397,3.365,1.139,"Mean = 3.365, SD = 1.139",NA,NA,FALSE
+"medburden_3","numeric",397,3.254,1.186,"Mean = 3.254, SD = 1.186",NA,NA,FALSE
+"med_burden_4","numeric",397,3.821,0.97,"Mean = 3.821, SD = 0.970",NA,NA,FALSE
+"c_lengthofuse","categorical",397,NA,NA,"Categorical — skipped",NA,NA,FALSE
+"stop_rate_dc","numeric",285,1.032,0.824,"Mean = 1.032, SD = 0.824",-0.04,"Cohen's d",TRUE
+"stop_rate_dc_2","numeric",96,0.802,0.854,"Mean = 0.802, SD = 0.854",0.077,"Cohen's d",TRUE
+"tablet_split","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,TRUE
+"tablet_split_2","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,TRUE
+"stop_wdl_exp","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,TRUE
+"stop_wdl_exp_2","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,TRUE
+"duration_stopped","numeric",286,0.829,1.006,"Mean = 0.829, SD = 1.006",NA,NA,FALSE
+"stopping_aids","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,TRUE
+"stopping_aids_2","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,TRUE
+"intent","numeric",293,1.799,0.757,"Mean = 1.799, SD = 0.757",NA,NA,FALSE
+"alc_sleep","numeric",20,2.65,1.089,"Mean = 2.650, SD = 1.089",NA,NA,FALSE
+"can_sleep","numeric",53,2.472,1.339,"Mean = 2.472, SD = 1.339",NA,NA,FALSE
+"melatonin_use","numeric",95,2.674,1.267,"Mean = 2.674, SD = 1.267",NA,NA,FALSE
+"op_sleep","numeric",7,2.571,1.397,"Mean = 2.571, SD = 1.397",NA,NA,FALSE
+"benefit_1","numeric",270,3.826,0.946,"Mean = 3.826, SD = 0.946",-0.124,"Cohen's d",TRUE
+"benefits_1_v2","NOT FOUND",NA,NA,NA,"Variable not found in dataset",NA,NA,TRUE
+"benefit_4","numeric",269,4.086,0.765,"Mean = 4.086, SD = 0.765",-0.223,"Cohen's d",TRUE
+"benefit_4_v2","numeric",90,3.989,0.727,"Mean = 3.989, SD = 0.727",0.35,"Cohen's d",TRUE
+"benefit_5","numeric",270,4.115,0.735,"Mean = 4.115, SD = 0.735",-0.062,"Cohen's d",TRUE
+"benefit_5_v2","numeric",90,4.067,0.716,"Mean = 4.067, SD = 0.716",0.401,"Cohen's d",TRUE
+"benefit_6","numeric",269,3.323,1.074,"Mean = 3.323, SD = 1.074",-0.177,"Cohen's d",TRUE
+"benefit_6_v2","numeric",90,3.511,1.124,"Mean = 3.511, SD = 1.124",0.101,"Cohen's d",TRUE
+"benefit_dep","numeric",270,3.633,1.085,"Mean = 3.633, SD = 1.085",0.148,"Cohen's d",TRUE
+"benefit_dep_v2","numeric",90,3.433,1.071,"Mean = 3.433, SD = 1.071",0.076,"Cohen's d",TRUE
+"side_effects_1","numeric",270,2.285,1.075,"Mean = 2.285, SD = 1.075",0.281,"Cohen's d",TRUE
+"side_effects_1_v2","numeric",90,2.867,1.317,"Mean = 2.867, SD = 1.317",-0.178,"Cohen's d",TRUE
+"side_effects_2","numeric",269,1.981,0.866,"Mean = 1.981, SD = 0.866",0.11,"Cohen's d",TRUE
+"side_effects_2_v2","numeric",90,2.356,1.115,"Mean = 2.356, SD = 1.115",-0.194,"Cohen's d",TRUE
+"side_effects_3","numeric",269,1.517,0.746,"Mean = 1.517, SD = 0.746",0.178,"Cohen's d",TRUE
+"side_effects_3_v2","numeric",90,1.711,0.974,"Mean = 1.711, SD = 0.974",-0.101,"Cohen's d",TRUE
+"side_effects_4","numeric",264,2.848,0.931,"Mean = 2.848, SD = 0.931",-0.204,"Cohen's d",TRUE
+"side_effects_4_v2","numeric",88,2.682,1.089,"Mean = 2.682, SD = 1.089",0.406,"Cohen's d",TRUE
+"safety_1","numeric",264,1.913,0.753,"Mean = 1.913, SD = 0.753",-0.46,"Cohen's d",TRUE
+"safety_1_v2","numeric",88,2.148,1.034,"Mean = 2.148, SD = 1.034",0.247,"Cohen's d",TRUE
+"safety_2","numeric",264,3.386,0.952,"Mean = 3.386, SD = 0.952",-0.333,"Cohen's d",TRUE
+"safety_2_v2","numeric",88,3.466,1.072,"Mean = 3.466, SD = 1.072",-0.504,"Cohen's d",TRUE
+"safety_3","numeric",264,1.667,1.037,"Mean = 1.667, SD = 1.037",0.252,"Cohen's d",TRUE
+"safety_3_v2","numeric",88,1.455,0.896,"Mean = 1.455, SD = 0.896",0.092,"Cohen's d",TRUE
+"safety_4","numeric",264,3.33,1.382,"Mean = 3.330, SD = 1.382",0.319,"Cohen's d",TRUE
+"safety_4_v2","numeric",88,3.239,1.33,"Mean = 3.239, SD = 1.330",-0.037,"Cohen's d",TRUE
+"adls_1","numeric",264,1.803,0.863,"Mean = 1.803, SD = 0.863",-0.064,"Cohen's d",TRUE
+"adls_1_v2","numeric",88,2.17,1.053,"Mean = 2.170, SD = 1.053",0.27,"Cohen's d",TRUE
+"adls_2","numeric",263,1.726,0.843,"Mean = 1.726, SD = 0.843",0.34,"Cohen's d",TRUE
+"adls_2_v2","numeric",88,2.102,1.104,"Mean = 2.102, SD = 1.104",0.243,"Cohen's d",TRUE
+"dependence_1","numeric",262,3.74,1.097,"Mean = 3.740, SD = 1.097",-0.15,"Cohen's d",TRUE
+"dependence_1_v2","numeric",88,3.239,1.39,"Mean = 3.239, SD = 1.390",0.473,"Cohen's d",TRUE
+"dependence_2","numeric",261,3.536,1.135,"Mean = 3.536, SD = 1.135",-0.497,"Cohen's d",TRUE
+"dependence_2_v2","numeric",87,3.115,1.205,"Mean = 3.115, SD = 1.205",0.414,"Cohen's d",TRUE
+"dependence_3","numeric",261,3.023,1.173,"Mean = 3.023, SD = 1.173",0.277,"Cohen's d",TRUE
+"dependence_3_v2","numeric",87,2.759,1.099,"Mean = 2.759, SD = 1.099",0.702,"Cohen's d",TRUE
+"motivation_1","numeric",261,3.49,1.156,"Mean = 3.490, SD = 1.156",-0.142,"Cohen's d",TRUE
+"motivation_1_v2","numeric",87,2.793,1.212,"Mean = 2.793, SD = 1.212",0.189,"Cohen's d",TRUE
+"motivation_2","numeric",261,2.64,1.18,"Mean = 2.640, SD = 1.180",-0.272,"Cohen's d",TRUE
+"motivation_2_v2","numeric",87,2.184,1.062,"Mean = 2.184, SD = 1.062",-0.243,"Cohen's d",TRUE
+"motivation_3","numeric",261,2.544,1.194,"Mean = 2.544, SD = 1.194",-0.039,"Cohen's d",TRUE
+"motivation_3_v2","numeric",87,2.793,1.365,"Mean = 2.793, SD = 1.365",0.219,"Cohen's d",TRUE
+"desires_1","numeric",261,2.617,1.066,"Mean = 2.617, SD = 1.066",-0.115,"Cohen's d",TRUE
+"desires_1_v2","numeric",87,2.954,1.238,"Mean = 2.954, SD = 1.238",0.409,"Cohen's d",TRUE
+"desires_2","numeric",260,2.415,0.881,"Mean = 2.415, SD = 0.881",0.2,"Cohen's d",TRUE
+"desires_2_v2","numeric",87,2.46,0.974,"Mean = 2.460, SD = 0.974",0.532,"Cohen's d",TRUE
+"desires_3","numeric",261,3.464,1.072,"Mean = 3.464, SD = 1.072",0.198,"Cohen's d",TRUE
+"desires_3_v2","numeric",87,3.69,1.223,"Mean = 3.690, SD = 1.223",0.429,"Cohen's d",TRUE
+"capability","numeric",260,3.296,1.169,"Mean = 3.296, SD = 1.169",-0.567,"Cohen's d",TRUE
+"capability_v2","numeric",87,2.46,1.301,"Mean = 2.460, SD = 1.301",0.23,"Cohen's d",TRUE
+"capability_1","numeric",260,2.838,1.078,"Mean = 2.838, SD = 1.078",0.238,"Cohen's d",TRUE
+"capability_1_v2","numeric",87,3.839,1.16,"Mean = 3.839, SD = 1.160",-0.054,"Cohen's d",TRUE
+"inf_soc_1","numeric",260,2.219,0.931,"Mean = 2.219, SD = 0.931",0.411,"Cohen's d",TRUE
+"inf_soc_1_v2","numeric",87,2.023,1.023,"Mean = 2.023, SD = 1.023",-0.177,"Cohen's d",TRUE
+"inf_soc_2","numeric",260,2.131,0.962,"Mean = 2.131, SD = 0.962",0.221,"Cohen's d",TRUE
+"inf_soc_2_v2","numeric",87,2.092,1.007,"Mean = 2.092, SD = 1.007",-0.024,"Cohen's d",TRUE
+"inf_soc_3","numeric",260,2.069,1.026,"Mean = 2.069, SD = 1.026",0.184,"Cohen's d",TRUE
+"inf_soc_3_v2","numeric",86,1.965,0.939,"Mean = 1.965, SD = 0.939",-0.121,"Cohen's d",TRUE
+"inf_hcp_1","numeric",260,2.9,0.903,"Mean = 2.900, SD = 0.903",0.31,"Cohen's d",TRUE
+"inf_hcp_1_v2","numeric",87,3.184,0.983,"Mean = 3.184, SD = 0.983",0.308,"Cohen's d",TRUE
+"inf_hcp_2","numeric",260,3.188,1.149,"Mean = 3.188, SD = 1.149",0.132,"Cohen's d",TRUE
+"inf_hcp_2_v2","numeric",87,3,1.201,"Mean = 3.000, SD = 1.201",0.412,"Cohen's d",TRUE
+"inf_hcp_3","numeric",260,2.746,0.679,"Mean = 2.746, SD = 0.679",0.006,"Cohen's d",TRUE
+"inf_hcp_3_v2","numeric",87,2.609,0.798,"Mean = 2.609, SD = 0.798",0.172,"Cohen's d",TRUE
+"inf_hcp_4","numeric",259,2.22,0.941,"Mean = 2.220, SD = 0.941",0.312,"Cohen's d",TRUE
+"inf_hcp_4_v2","numeric",87,2.172,1.081,"Mean = 2.172, SD = 1.081",0.007,"Cohen's d",TRUE
+"memory","numeric",255,3.557,1.081,"Mean = 3.557, SD = 1.081",0.106,"Cohen's d",TRUE
+"memory_v2","numeric",85,2.188,1.075,"Mean = 2.188, SD = 1.075",0.222,"Cohen's d",TRUE
+"thinking","numeric",255,3.506,1.125,"Mean = 3.506, SD = 1.125",0.227,"Cohen's d",TRUE
+"thinking_v2","numeric",84,2.214,1.131,"Mean = 2.214, SD = 1.131",0.116,"Cohen's d",TRUE
+"activities","numeric",255,3.455,1.173,"Mean = 3.455, SD = 1.173",-0.109,"Cohen's d",TRUE
+"activities_v2","numeric",84,2.25,1.16,"Mean = 2.250, SD = 1.160",-0.03,"Cohen's d",TRUE
+"socialize","numeric",255,3.388,1.205,"Mean = 3.388, SD = 1.205",0.097,"Cohen's d",TRUE
+"socialize_v2","numeric",85,2,1,"Mean = 2.000, SD = 1.000",0,"Cohen's d",TRUE
+"driving","numeric",255,3.514,1.285,"Mean = 3.514, SD = 1.285",-0.283,"Cohen's d",TRUE
+"driving_v2","numeric",85,2.153,1.086,"Mean = 2.153, SD = 1.086",0.113,"Cohen's d",TRUE
+"balance","numeric",254,3.728,0.999,"Mean = 3.728, SD = 0.999",0.551,"Cohen's d",TRUE
+"balance_v2","numeric",84,2.036,1.011,"Mean = 2.036, SD = 1.011",0.184,"Cohen's d",TRUE
+"falls","numeric",254,3.654,1.047,"Mean = 3.654, SD = 1.047",0.432,"Cohen's d",TRUE
+"falls_v2","numeric",84,1.845,0.963,"Mean = 1.845, SD = 0.963",0.162,"Cohen's d",TRUE
+"indication","numeric",254,4.402,0.972,"Mean = 4.402, SD = 0.972",0.377,"Cohen's d",TRUE
+"indication_v2","numeric",84,2.024,1.086,"Mean = 2.024, SD = 1.086",-0.102,"Cohen's d",TRUE
+"efficacy","numeric",254,4.173,0.825,"Mean = 4.173, SD = 0.825",0.31,"Cohen's d",TRUE
+"efficacy_v2","numeric",84,2.714,1.376,"Mean = 2.714, SD = 1.376",0.198,"Cohen's d",TRUE
+"alternative","numeric",254,4.193,1.04,"Mean = 4.193, SD = 1.040",-0.195,"Cohen's d",TRUE
+"alternative_v2","numeric",84,2.929,1.324,"Mean = 2.929, SD = 1.324",0.415,"Cohen's d",TRUE
+"inf_soc","numeric",254,2.898,1.08,"Mean = 2.898, SD = 1.080",-0.143,"Cohen's d",TRUE
+"inf_soc_v2","numeric",84,1.833,0.876,"Mean = 1.833, SD = 0.876",-0.161,"Cohen's d",TRUE
+"inf_pres","numeric",254,3.264,0.977,"Mean = 3.264, SD = 0.977",0.708,"Cohen's d",TRUE
+"inf_pres_v2","numeric",84,2.619,1.325,"Mean = 2.619, SD = 1.325",0.274,"Cohen's d",TRUE
+"inf_rphc","numeric",254,2.941,0.97,"Mean = 2.941, SD = 0.970",0.795,"Cohen's d",TRUE
+"inf_rphc_v2","numeric",84,2.095,0.977,"Mean = 2.095, SD = 0.977",0.196,"Cohen's d",TRUE
+"interactions","numeric",254,3.555,1.072,"Mean = 3.555, SD = 1.072",0.354,"Cohen's d",TRUE
+"interactions_v2","numeric",84,1.881,0.884,"Mean = 1.881, SD = 0.884",-0.011,"Cohen's d",TRUE
+"dependence","numeric",254,3.378,1.055,"Mean = 3.378, SD = 1.055",0.454,"Cohen's d",TRUE
+"dependence_v2","numeric",84,2.845,1.349,"Mean = 2.845, SD = 1.349",0.273,"Cohen's d",TRUE
+"reduc","numeric",254,3.98,0.98,"Mean = 3.980, SD = 0.980",0.11,"Cohen's d",TRUE
+"reduc_v2","numeric",83,3.133,1.217,"Mean = 3.133, SD = 1.217",0.138,"Cohen's d",TRUE
+"cost","numeric",252,2.615,1.059,"Mean = 2.615, SD = 1.059",-0.031,"Cohen's d",TRUE
+"cost_v2","numeric",82,1.902,0.951,"Mean = 1.902, SD = 0.951",-0.131,"Cohen's d",TRUE
+"dbas1","numeric",338,7.059,2.434,"Mean = 7.059, SD = 2.434",NA,NA,FALSE
+"dbas_2","numeric",338,5.462,3.224,"Mean = 5.462, SD = 3.224",NA,NA,FALSE
+"dbas_3","numeric",338,7.796,2.429,"Mean = 7.796, SD = 2.429",NA,NA,FALSE
+"dbas_4","numeric",338,6.79,2.858,"Mean = 6.790, SD = 2.858",NA,NA,FALSE
+"dbas_5","numeric",338,6.994,2.506,"Mean = 6.994, SD = 2.506",NA,NA,FALSE
+"dbas_6","numeric",338,7.5,2.644,"Mean = 7.500, SD = 2.644",NA,NA,FALSE
+"dbas_7","numeric",338,6.408,2.78,"Mean = 6.408, SD = 2.780",NA,NA,FALSE
+"dbas_8","numeric",338,4.331,2.759,"Mean = 4.331, SD = 2.759",NA,NA,FALSE
+"dbas_9","numeric",338,4.772,2.723,"Mean = 4.772, SD = 2.723",NA,NA,FALSE
+"dbas_10","numeric",338,7.278,2.4,"Mean = 7.278, SD = 2.400",NA,NA,FALSE
+"dbas_11","numeric",338,5.885,2.679,"Mean = 5.885, SD = 2.679",NA,NA,FALSE
+"dbas_12","numeric",338,6.775,2.587,"Mean = 6.775, SD = 2.587",NA,NA,FALSE
+"dbas_13","numeric",338,4.506,2.473,"Mean = 4.506, SD = 2.473",NA,NA,FALSE
+"dbas_14","numeric",338,4.828,2.877,"Mean = 4.828, SD = 2.877",NA,NA,FALSE
+"dbas_15","numeric",338,5.074,3.002,"Mean = 5.074, SD = 3.002",NA,NA,FALSE
+"dbas_16","numeric",338,3.689,3.049,"Mean = 3.689, SD = 3.049",NA,NA,FALSE
+"reserved","numeric",338,3.24,1.309,"Mean = 3.240, SD = 1.309",NA,NA,FALSE
+"trusting","numeric",338,4.124,1.014,"Mean = 4.124, SD = 1.014",NA,NA,FALSE
+"lazy","numeric",338,1.935,1.172,"Mean = 1.935, SD = 1.172",NA,NA,FALSE
+"relaxed","numeric",338,3.071,1.223,"Mean = 3.071, SD = 1.223",NA,NA,FALSE
+"few_interests","numeric",338,2.701,1.4,"Mean = 2.701, SD = 1.400",NA,NA,FALSE
+"outgoing","numeric",338,3.657,1.171,"Mean = 3.657, SD = 1.171",NA,NA,FALSE
+"find_fault","numeric",338,2.432,1.167,"Mean = 2.432, SD = 1.167",NA,NA,FALSE
+"thorough","numeric",338,4.343,0.848,"Mean = 4.343, SD = 0.848",NA,NA,FALSE
+"nervous","numeric",338,2.876,1.262,"Mean = 2.876, SD = 1.262",NA,NA,FALSE
+"imagination","numeric",338,3.858,1.003,"Mean = 3.858, SD = 1.003",NA,NA,FALSE
+"surps1","numeric",337,2.955,0.637,"Mean = 2.955, SD = 0.637",NA,NA,FALSE
+"surps2","numeric",337,2.246,0.721,"Mean = 2.246, SD = 0.721",NA,NA,FALSE
+"surps3","numeric",337,1.516,0.88,"Mean = 1.516, SD = 0.880",NA,NA,FALSE
+"surps4","numeric",337,2.967,0.683,"Mean = 2.967, SD = 0.683",NA,NA,FALSE
+"surps5","numeric",337,2.122,0.715,"Mean = 2.122, SD = 0.715",NA,NA,FALSE
+"surps6","numeric",337,2.763,0.75,"Mean = 2.763, SD = 0.750",NA,NA,FALSE
+"surps7","numeric",337,2.697,0.726,"Mean = 2.697, SD = 0.726",NA,NA,FALSE
+"surps8","numeric",337,3.045,0.724,"Mean = 3.045, SD = 0.724",NA,NA,FALSE
+"surps9","numeric",336,2.074,0.739,"Mean = 2.074, SD = 0.739",NA,NA,FALSE
+"surps10","numeric",336,2.628,0.718,"Mean = 2.628, SD = 0.718",NA,NA,FALSE
+"surps11","numeric",336,1.946,0.644,"Mean = 1.946, SD = 0.644",NA,NA,FALSE
+"surps12","numeric",336,1.75,0.948,"Mean = 1.750, SD = 0.948",NA,NA,FALSE
+"surps13","numeric",336,3.301,0.569,"Mean = 3.301, SD = 0.569",NA,NA,FALSE
+"surps14","numeric",336,2.378,0.767,"Mean = 2.378, SD = 0.767",NA,NA,FALSE
+"surps15","numeric",336,2.122,0.765,"Mean = 2.122, SD = 0.765",NA,NA,FALSE
+"surps16","numeric",336,1.533,0.673,"Mean = 1.533, SD = 0.673",NA,NA,FALSE
+"surps17","numeric",334,1.659,0.777,"Mean = 1.659, SD = 0.777",NA,NA,FALSE
+"surps18","numeric",334,2.512,0.713,"Mean = 2.512, SD = 0.713",NA,NA,FALSE
+"surps19","numeric",334,2.237,0.943,"Mean = 2.237, SD = 0.943",NA,NA,FALSE
+"surps20","numeric",334,2.997,0.54,"Mean = 2.997, SD = 0.540",NA,NA,FALSE
+"surps21","numeric",334,2.503,0.692,"Mean = 2.503, SD = 0.692",NA,NA,FALSE
+"surps22","numeric",334,1.584,0.642,"Mean = 1.584, SD = 0.642",NA,NA,FALSE
+"surps23","numeric",334,2.638,0.729,"Mean = 2.638, SD = 0.729",NA,NA,FALSE
+"ciss1","numeric",334,3.036,1.114,"Mean = 3.036, SD = 1.114",NA,NA,FALSE
+"ciss2","numeric",334,3.988,0.873,"Mean = 3.988, SD = 0.873",NA,NA,FALSE
+"ciss3","numeric",334,2.802,1.111,"Mean = 2.802, SD = 1.111",NA,NA,FALSE
+"ciss4","numeric",334,2.964,1.256,"Mean = 2.964, SD = 1.256",NA,NA,FALSE
+"ciss5","numeric",334,2.844,1.162,"Mean = 2.844, SD = 1.162",NA,NA,FALSE
+"ciss6","numeric",334,3.644,0.928,"Mean = 3.644, SD = 0.928",NA,NA,FALSE
+"ciss7","numeric",334,3.057,1.198,"Mean = 3.057, SD = 1.198",NA,NA,FALSE
+"ciss8","numeric",334,3.722,0.909,"Mean = 3.722, SD = 0.909",NA,NA,FALSE
+"ciss9","numeric",334,2.32,1.171,"Mean = 2.320, SD = 1.171",NA,NA,FALSE
+"ciss10","numeric",334,2.59,1.207,"Mean = 2.590, SD = 1.207",NA,NA,FALSE
+"ciss11","numeric",333,4.006,0.857,"Mean = 4.006, SD = 0.857",NA,NA,FALSE
+"ciss12","numeric",333,2.676,1.037,"Mean = 2.676, SD = 1.037",NA,NA,FALSE
+"ciss13","numeric",333,3.477,0.838,"Mean = 3.477, SD = 0.838",NA,NA,FALSE
+"ciss14","numeric",333,2.535,1.142,"Mean = 2.535, SD = 1.142",NA,NA,FALSE
+"ciss15","numeric",333,3.186,1.193,"Mean = 3.186, SD = 1.193",NA,NA,FALSE
+"ciss16","numeric",333,3.802,0.887,"Mean = 3.802, SD = 0.887",NA,NA,FALSE
+"ciss17","numeric",333,3.511,1.077,"Mean = 3.511, SD = 1.077",NA,NA,FALSE
+"ciss18","numeric",333,2.312,1.148,"Mean = 2.312, SD = 1.148",NA,NA,FALSE
+"ciss19","numeric",333,3.342,0.939,"Mean = 3.342, SD = 0.939",NA,NA,FALSE
+"ciss20","numeric",333,2.547,1.062,"Mean = 2.547, SD = 1.062",NA,NA,FALSE
+"ciss21","numeric",333,2.916,1.261,"Mean = 2.916, SD = 1.261",NA,NA,FALSE
