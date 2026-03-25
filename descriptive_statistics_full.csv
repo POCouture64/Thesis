@@ -15,7 +15,7 @@
 "med_burden2","numeric",397,"3.37 (1.14)",NA,NA,FALSE
 "medburden_3","numeric",397,"3.25 (1.19)",NA,NA,FALSE
 "med_burden_4","numeric",397,"3.82 (0.97)",NA,NA,FALSE
-"c_lengthofuse","categorical",397,"Categorical — skipped",NA,NA,FALSE
+"c_lengthofuse","numeric",397,"12.29 (9.74)",NA,NA,FALSE
 "stop_rate_dc","numeric",285,"1.03 (0.82)",-0.04,"Cohen's d",TRUE
 "stop_rate_dc_2","numeric",96,"0.80 (0.85)",0.08,"Cohen's d",TRUE
 "tablet_split","binary (numeric)",397,"0.40 (0.49)",-0.88,"Cohen's h",TRUE
