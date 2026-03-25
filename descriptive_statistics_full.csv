@@ -16,119 +16,119 @@
 "medburden_3","numeric",397,"3.25 (1.19)",NA,NA,FALSE
 "med_burden_4","numeric",397,"3.82 (0.97)",NA,NA,FALSE
 "c_lengthofuse","numeric",397,"12.29 (9.74)",NA,NA,FALSE
-"stop_rate_dc","numeric",285,"1.03 (0.82)",-0.2,"Cohen's d",TRUE
+"stop_rate_dc","numeric",285,"1.03 (0.82)",-0.201,"Cohen's d",TRUE
 "stop_rate_dc_2","numeric",96,"0.80 (0.85)",NA,NA,TRUE
-"tablet_split","binary (numeric)",397,"0.40 (0.49)",-0.88,"Cohen's h",TRUE
+"tablet_split","binary (numeric)",397,"0.40 (0.49)",-0.883,"Cohen's h",TRUE
 "tablet_split_2","binary (numeric)",397,"0.10 (0.30)",NA,NA,TRUE
-"stop_wdl_exp","numeric",397,"0.95 (1.00)",-1.06,"Cohen's d",TRUE
+"stop_wdl_exp","numeric",397,"0.95 (1.00)",-1.059,"Cohen's d",TRUE
 "stop_wdl_exp_2","numeric",397,"0.24 (0.64)",NA,NA,TRUE
 "duration_stopped","numeric",286,"0.83 (1.01)",NA,NA,FALSE
-"stopping_aids","numeric",397,"0.53 (0.71)",-0.75,"Cohen's d",TRUE
+"stopping_aids","numeric",397,"0.53 (0.71)",-0.746,"Cohen's d",TRUE
 "stopping_aids_2","numeric",397,"0.19 (0.53)",NA,NA,TRUE
 "intent","numeric",293,"1.80 (0.76)",NA,NA,FALSE
 "alc_sleep","numeric",20,"2.65 (1.09)",NA,NA,FALSE
 "can_sleep","numeric",53,"2.47 (1.34)",NA,NA,FALSE
 "melatonin_use","numeric",95,"2.67 (1.27)",NA,NA,FALSE
 "op_sleep","numeric",7,"2.57 (1.40)",NA,NA,FALSE
-"benefit_1","numeric",270,"3.83 (0.95)",-0.06,"Cohen's d",TRUE
+"benefit_1","numeric",270,"3.83 (0.95)",-0.061,"Cohen's d",TRUE
 "benefit_1_v2","numeric",90,"3.76 (0.89)",NA,NA,TRUE
-"benefit_4","numeric",269,"4.09 (0.77)",-0.06,"Cohen's d",TRUE
+"benefit_4","numeric",269,"4.09 (0.77)",-0.065,"Cohen's d",TRUE
 "benefit_4_v2","numeric",90,"3.99 (0.73)",NA,NA,TRUE
-"benefit_5","numeric",270,"4.11 (0.74)",0.03,"Cohen's d",TRUE
+"benefit_5","numeric",270,"4.11 (0.74)",0.027,"Cohen's d",TRUE
 "benefit_5_v2","numeric",90,"4.07 (0.72)",NA,NA,TRUE
-"benefit_6","numeric",269,"3.32 (1.07)",0.12,"Cohen's d",TRUE
+"benefit_6","numeric",269,"3.32 (1.07)",0.121,"Cohen's d",TRUE
 "benefit_6_v2","numeric",90,"3.51 (1.12)",NA,NA,TRUE
-"benefit_dep","numeric",270,"3.63 (1.09)",-0.09,"Cohen's d",TRUE
+"benefit_dep","numeric",270,"3.63 (1.09)",-0.094,"Cohen's d",TRUE
 "benefit_dep_v2","numeric",90,"3.43 (1.07)",NA,NA,TRUE
-"side_effects_1","numeric",270,"2.29 (1.08)",0.39,"Cohen's d",TRUE
+"side_effects_1","numeric",270,"2.29 (1.08)",0.393,"Cohen's d",TRUE
 "side_effects_1_v2","numeric",90,"2.87 (1.32)",NA,NA,TRUE
-"side_effects_2","numeric",269,"1.98 (0.87)",0.27,"Cohen's d",TRUE
+"side_effects_2","numeric",269,"1.98 (0.87)",0.272,"Cohen's d",TRUE
 "side_effects_2_v2","numeric",90,"2.36 (1.11)",NA,NA,TRUE
-"side_effects_3","numeric",269,"1.52 (0.75)",0.19,"Cohen's d",TRUE
+"side_effects_3","numeric",269,"1.52 (0.75)",0.189,"Cohen's d",TRUE
 "side_effects_3_v2","numeric",90,"1.71 (0.97)",NA,NA,TRUE
-"side_effects_4","numeric",264,"2.85 (0.93)",-0.07,"Cohen's d",TRUE
+"side_effects_4","numeric",264,"2.85 (0.93)",-0.068,"Cohen's d",TRUE
 "side_effects_4_v2","numeric",88,"2.68 (1.09)",NA,NA,TRUE
-"safety_1","numeric",264,"1.91 (0.75)",0.22,"Cohen's d",TRUE
+"safety_1","numeric",264,"1.91 (0.75)",0.216,"Cohen's d",TRUE
 "safety_1_v2","numeric",88,"2.15 (1.03)",NA,NA,TRUE
-"safety_2","numeric",264,"3.39 (0.95)",-0.12,"Cohen's d",TRUE
+"safety_2","numeric",264,"3.39 (0.95)",-0.118,"Cohen's d",TRUE
 "safety_2_v2","numeric",88,"3.47 (1.07)",NA,NA,TRUE
 "safety_3","numeric",264,"1.67 (1.04)",-0.1,"Cohen's d",TRUE
 "safety_3_v2","numeric",88,"1.45 (0.90)",NA,NA,TRUE
-"safety_4","numeric",264,"3.33 (1.38)",0,"Cohen's d",TRUE
+"safety_4","numeric",264,"3.33 (1.38)",-0.002,"Cohen's d",TRUE
 "safety_4_v2","numeric",88,"3.24 (1.33)",NA,NA,TRUE
-"adls_1","numeric",264,"1.80 (0.86)",0.38,"Cohen's d",TRUE
+"adls_1","numeric",264,"1.80 (0.86)",0.375,"Cohen's d",TRUE
 "adls_1_v2","numeric",88,"2.17 (1.05)",NA,NA,TRUE
-"adls_2","numeric",263,"1.73 (0.84)",0.45,"Cohen's d",TRUE
+"adls_2","numeric",263,"1.73 (0.84)",0.448,"Cohen's d",TRUE
 "adls_2_v2","numeric",88,"2.10 (1.10)",NA,NA,TRUE
-"dependence_1","numeric",262,"3.74 (1.10)",-0.23,"Cohen's d",TRUE
+"dependence_1","numeric",262,"3.74 (1.10)",-0.232,"Cohen's d",TRUE
 "dependence_1_v2","numeric",88,"3.24 (1.39)",NA,NA,TRUE
-"dependence_2","numeric",261,"3.54 (1.13)",-0.28,"Cohen's d",TRUE
+"dependence_2","numeric",261,"3.54 (1.13)",-0.276,"Cohen's d",TRUE
 "dependence_2_v2","numeric",87,"3.11 (1.20)",NA,NA,TRUE
-"dependence_3","numeric",261,"3.02 (1.17)",0.02,"Cohen's d",TRUE
+"dependence_3","numeric",261,"3.02 (1.17)",0.021,"Cohen's d",TRUE
 "dependence_3_v2","numeric",87,"2.76 (1.10)",NA,NA,TRUE
-"motivation_1","numeric",261,"3.49 (1.16)",-0.44,"Cohen's d",TRUE
+"motivation_1","numeric",261,"3.49 (1.16)",-0.442,"Cohen's d",TRUE
 "motivation_1_v2","numeric",87,"2.79 (1.21)",NA,NA,TRUE
-"motivation_2","numeric",261,"2.64 (1.18)",-0.41,"Cohen's d",TRUE
+"motivation_2","numeric",261,"2.64 (1.18)",-0.414,"Cohen's d",TRUE
 "motivation_2_v2","numeric",87,"2.18 (1.06)",NA,NA,TRUE
-"motivation_3","numeric",261,"2.54 (1.19)",0.21,"Cohen's d",TRUE
+"motivation_3","numeric",261,"2.54 (1.19)",0.206,"Cohen's d",TRUE
 "motivation_3_v2","numeric",87,"2.79 (1.37)",NA,NA,TRUE
-"desires_1","numeric",261,"2.62 (1.07)",0.32,"Cohen's d",TRUE
+"desires_1","numeric",261,"2.62 (1.07)",0.322,"Cohen's d",TRUE
 "desires_1_v2","numeric",87,"2.95 (1.24)",NA,NA,TRUE
-"desires_2","numeric",260,"2.42 (0.88)",0.2,"Cohen's d",TRUE
+"desires_2","numeric",260,"2.42 (0.88)",0.204,"Cohen's d",TRUE
 "desires_2_v2","numeric",87,"2.46 (0.97)",NA,NA,TRUE
-"desires_3","numeric",261,"3.46 (1.07)",0.3,"Cohen's d",TRUE
+"desires_3","numeric",261,"3.46 (1.07)",0.303,"Cohen's d",TRUE
 "desires_3_v2","numeric",87,"3.69 (1.22)",NA,NA,TRUE
 "capability","numeric",260,"3.30 (1.17)",-0.58,"Cohen's d",TRUE
 "capability_v2","numeric",87,"2.46 (1.30)",NA,NA,TRUE
-"capability_1","numeric",260,"2.84 (1.08)",0.72,"Cohen's d",TRUE
+"capability_1","numeric",260,"2.84 (1.08)",0.723,"Cohen's d",TRUE
 "capability_1_v2","numeric",87,"3.84 (1.16)",NA,NA,TRUE
-"inf_soc_1","numeric",260,"2.22 (0.93)",-0.13,"Cohen's d",TRUE
+"inf_soc_1","numeric",260,"2.22 (0.93)",-0.131,"Cohen's d",TRUE
 "inf_soc_1_v2","numeric",87,"2.02 (1.02)",NA,NA,TRUE
-"inf_soc_2","numeric",260,"2.13 (0.96)",0,"Cohen's d",TRUE
+"inf_soc_2","numeric",260,"2.13 (0.96)",0.003,"Cohen's d",TRUE
 "inf_soc_2_v2","numeric",87,"2.09 (1.01)",NA,NA,TRUE
-"inf_soc_3","numeric",260,"2.07 (1.03)",-0.07,"Cohen's d",TRUE
+"inf_soc_3","numeric",260,"2.07 (1.03)",-0.072,"Cohen's d",TRUE
 "inf_soc_3_v2","numeric",86,"1.97 (0.94)",NA,NA,TRUE
-"inf_hcp_1","numeric",260,"2.90 (0.90)",0.37,"Cohen's d",TRUE
+"inf_hcp_1","numeric",260,"2.90 (0.90)",0.373,"Cohen's d",TRUE
 "inf_hcp_1_v2","numeric",87,"3.18 (0.98)",NA,NA,TRUE
-"inf_hcp_2","numeric",260,"3.19 (1.15)",-0.01,"Cohen's d",TRUE
+"inf_hcp_2","numeric",260,"3.19 (1.15)",-0.006,"Cohen's d",TRUE
 "inf_hcp_2_v2","numeric",87,"3.00 (1.20)",NA,NA,TRUE
-"inf_hcp_3","numeric",260,"2.75 (0.68)",-0.11,"Cohen's d",TRUE
+"inf_hcp_3","numeric",260,"2.75 (0.68)",-0.105,"Cohen's d",TRUE
 "inf_hcp_3_v2","numeric",87,"2.61 (0.80)",NA,NA,TRUE
-"inf_hcp_4","numeric",259,"2.22 (0.94)",0.02,"Cohen's d",TRUE
+"inf_hcp_4","numeric",259,"2.22 (0.94)",0.019,"Cohen's d",TRUE
 "inf_hcp_4_v2","numeric",87,"2.17 (1.08)",NA,NA,TRUE
-"memory","numeric",255,"3.56 (1.08)",-0.85,"Cohen's d",TRUE
+"memory","numeric",255,"3.56 (1.08)",-0.853,"Cohen's d",TRUE
 "memory_v2","numeric",85,"2.19 (1.07)",NA,NA,TRUE
-"thinking","numeric",255,"3.51 (1.13)",-0.77,"Cohen's d",TRUE
+"thinking","numeric",255,"3.51 (1.13)",-0.773,"Cohen's d",TRUE
 "thinking_v2","numeric",84,"2.21 (1.13)",NA,NA,TRUE
-"activities","numeric",255,"3.45 (1.17)",-0.8,"Cohen's d",TRUE
+"activities","numeric",255,"3.45 (1.17)",-0.799,"Cohen's d",TRUE
 "activities_v2","numeric",84,"2.25 (1.16)",NA,NA,TRUE
-"socialize","numeric",255,"3.39 (1.20)",-0.86,"Cohen's d",TRUE
+"socialize","numeric",255,"3.39 (1.20)",-0.865,"Cohen's d",TRUE
 "socialize_v2","numeric",85,"2.00 (1.00)",NA,NA,TRUE
-"driving","numeric",255,"3.51 (1.29)",-0.85,"Cohen's d",TRUE
+"driving","numeric",255,"3.51 (1.29)",-0.852,"Cohen's d",TRUE
 "driving_v2","numeric",85,"2.15 (1.09)",NA,NA,TRUE
-"balance","numeric",254,"3.73 (1.00)",-1.02,"Cohen's d",TRUE
+"balance","numeric",254,"3.73 (1.00)",-1.024,"Cohen's d",TRUE
 "balance_v2","numeric",84,"2.04 (1.01)",NA,NA,TRUE
-"falls","numeric",254,"3.65 (1.05)",-1.09,"Cohen's d",TRUE
+"falls","numeric",254,"3.65 (1.05)",-1.093,"Cohen's d",TRUE
 "falls_v2","numeric",84,"1.85 (0.96)",NA,NA,TRUE
-"indication","numeric",254,"4.40 (0.97)",-1.48,"Cohen's d",TRUE
+"indication","numeric",254,"4.40 (0.97)",-1.481,"Cohen's d",TRUE
 "indication_v2","numeric",84,"2.02 (1.09)",NA,NA,TRUE
-"efficacy","numeric",254,"4.17 (0.83)",-0.93,"Cohen's d",TRUE
+"efficacy","numeric",254,"4.17 (0.83)",-0.934,"Cohen's d",TRUE
 "efficacy_v2","numeric",84,"2.71 (1.38)",NA,NA,TRUE
-"alternative","numeric",254,"4.19 (1.04)",-0.75,"Cohen's d",TRUE
+"alternative","numeric",254,"4.19 (1.04)",-0.753,"Cohen's d",TRUE
 "alternative_v2","numeric",84,"2.93 (1.32)",NA,NA,TRUE
-"inf_soc","numeric",254,"2.90 (1.08)",-0.83,"Cohen's d",TRUE
+"inf_soc","numeric",254,"2.90 (1.08)",-0.833,"Cohen's d",TRUE
 "inf_soc_v2","numeric",84,"1.83 (0.88)",NA,NA,TRUE
-"inf_pres","numeric",254,"3.26 (0.98)",-0.26,"Cohen's d",TRUE
+"inf_pres","numeric",254,"3.26 (0.98)",-0.258,"Cohen's d",TRUE
 "inf_pres_v2","numeric",84,"2.62 (1.33)",NA,NA,TRUE
-"inf_rphc","numeric",254,"2.94 (0.97)",-0.46,"Cohen's d",TRUE
+"inf_rphc","numeric",254,"2.94 (0.97)",-0.458,"Cohen's d",TRUE
 "inf_rphc_v2","numeric",84,"2.10 (0.98)",NA,NA,TRUE
-"interactions","numeric",254,"3.56 (1.07)",-1.07,"Cohen's d",TRUE
+"interactions","numeric",254,"3.56 (1.07)",-1.074,"Cohen's d",TRUE
 "interactions_v2","numeric",84,"1.88 (0.88)",NA,NA,TRUE
-"dependence","numeric",254,"3.38 (1.06)",-0.2,"Cohen's d",TRUE
+"dependence","numeric",254,"3.38 (1.06)",-0.204,"Cohen's d",TRUE
 "dependence_v2","numeric",84,"2.85 (1.35)",NA,NA,TRUE
-"reduc","numeric",254,"3.98 (0.98)",-0.55,"Cohen's d",TRUE
+"reduc","numeric",254,"3.98 (0.98)",-0.554,"Cohen's d",TRUE
 "reduc_v2","numeric",83,"3.13 (1.22)",NA,NA,TRUE
-"cost","numeric",252,"2.62 (1.06)",-0.56,"Cohen's d",TRUE
+"cost","numeric",252,"2.62 (1.06)",-0.559,"Cohen's d",TRUE
 "cost_v2","numeric",82,"1.90 (0.95)",NA,NA,TRUE
 "dbas1","numeric",338,"7.06 (2.43)",NA,NA,FALSE
 "dbas_2","numeric",338,"5.46 (3.22)",NA,NA,FALSE
